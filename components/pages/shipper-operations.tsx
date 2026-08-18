@@ -32,6 +32,8 @@ export async function ShipmentsPage({ lang, basePath, searchParams }: RoutePageP
       etd: shipments.etd,
       eta: shipments.eta,
       value: shipments.value,
+      cargoValue: shipments.cargoValue,
+      corridorId: shipments.corridorId,
       vessel: shipments.vessel,
       risk: shipments.riskLevel,
       hasEbl: shipments.hasEbl,
@@ -168,11 +170,11 @@ export async function ShipmentsPage({ lang, basePath, searchParams }: RoutePageP
             shipper: openShipment.shipper, qty: openShipment.qty,
             statusName: lang === 'vi' ? openShipment.statusVi : openShipment.statusEn,
             statusOrdinal: openShipment.status, etd: openShipment.etd, eta: openShipment.eta,
-            value: Number(openShipment.value), cargoValue: Number(openShipment.value),
+            value: Number(openShipment.value), cargoValue: Number(openShipment.cargoValue),
             vessel: openShipment.vessel, risk: openShipment.risk,
             hasEbl: openShipment.hasEbl, hasInsurance: openShipment.hasInsurance,
             hasFinance: openShipment.hasFinance, inDispute: openShipment.inDispute,
-            docCount: openShipment.docCount, corridorId: 1,
+            docCount: openShipment.docCount, corridorId: openShipment.corridorId,
           }}
         />
       ) : null}
