@@ -1,10 +1,15 @@
 import { asc, eq, sql } from 'drizzle-orm'
-import { BarChart, LineChart, heatStyle } from '@/components/charts'
+import { BarChart, LineChart } from '@/components/charts'
 import { DataTable } from '@/components/table/data-table'
-import { Card, KpiTile, Legend, Meter, PageHeader, Tag } from '@/components/ui'
+import { Card, KpiTile, Meter, PageHeader, Tag } from '@/components/ui'
+import { tableHref } from '@/components/table/table-types'
+import {
+  RateHeatmap, RepriceModal, cellPasses,
+  type HeatFilters, type RateCell, type RepriceTarget,
+} from './carrier-heatmap'
 import { db } from '@/lib/db'
 import {
-  bids, carriers, equipmentTypes, lanes, members, rateCards, rfqs, rfqScopes, voyages,
+  bids, carriers, lanes, members, ports, rateCards, rfqs, rfqScopes, voyages,
 } from '@/db/schema'
 import { num, pct, t, usd, type Lang } from '@/lib/i18n'
 import {
@@ -118,9 +123,18 @@ export async function CarrierDashboardPage({ lang }: RoutePageProps) {
   )
 }
 
-/** c_inv — Capacity & Rates, including the rate heatmap (ui-2.html:2375). */
+/** c_inv — Capacity & Rates, including the clickable rate heatmap (ui-2.html:2375). */
 export async function CapacityRatesPage({ lang, basePath, searchParams }: RoutePageProps) {
-  const [rows, laneOpts, eqOpts, weeks] = await Promise.all([
+  const one = (k: string): string => {
+    const v = searchParams[k]
+    return (Array.isArray(v) ? v[0] : v) ?? ''
+  }
+  const filters: HeatFilters = {
+    corridor: one('hm.cor'), equipment: one('hm.eq'), weekBand: one('hm.wk'),
+    fillBand: one('hm.fill'), pricing: one('hm.mode'), minSlots: one('hm.min'),
+  }
+
+  const [rows, laneRows, laneOpts, eqOpts] = await Promise.all([
     db.select({
       id: rateCards.id,
       lane: rateCards.laneCode,
@@ -137,25 +151,96 @@ export async function CapacityRatesPage({ lang, basePath, searchParams }: RouteP
       auto: rateCards.autoPricing,
       published: rateCards.published,
       daysOut: rateCards.daysOut,
+      corridorId: rateCards.corridorId,
     }).from(rateCards).orderBy(asc(rateCards.laneCode), asc(rateCards.weekIndex)),
+    db.select({
+      code: lanes.code, corridorId: lanes.corridorId, ord: lanes.ord,
+      origin: sql<string>`origin.name`, dest: sql<string>`dest.name`,
+    })
+      .from(lanes)
+      .innerJoin(sql`${ports} AS origin`, sql`origin.code = ${lanes.originPortCode}`)
+      .innerJoin(sql`${ports} AS dest`, sql`dest.code = ${lanes.destPortCode}`)
+      .orderBy(asc(lanes.ord)),
     laneOptions(),
     equipmentOptions(),
-    db.selectDistinct({ week: rateCards.week, weekIndex: rateCards.weekIndex })
-      .from(rateCards).orderBy(asc(rateCards.weekIndex)),
   ])
 
-  // Heatmap: one row per lane, one column per week, averaged across equipment types.
-  const heatLanes = [...new Set(rows.map((r) => r.lane))]
-  const cell = new Map<string, number>()
-  for (const r of rows) {
-    const key = `${r.lane}|${r.weekIndex}`
-    const prev = cell.get(key)
-    cell.set(key, prev === undefined ? r.fill : (prev + r.fill) / 2)
+  // Row-level filters (ui-2.html:2257 hmRows) narrow which rate-card rows feed the grid.
+  const inWeekBand = (wi: number) =>
+    filters.weekBand === 'a' ? wi <= 4
+      : filters.weekBand === 'b' ? wi >= 5 && wi <= 8
+        : filters.weekBand === 'c' ? wi >= 9 : true
+  const matched = rows.filter((r) =>
+    (!filters.corridor || String(r.corridorId) === filters.corridor)
+    && (!filters.equipment || r.equipment === filters.equipment)
+    && (!filters.pricing || String(r.auto ? 1 : 0) === filters.pricing)
+    && inWeekBand(r.weekIndex)
+    && (!filters.minSlots || r.remaining >= Number(filters.minSlots)))
+
+  const heatLanes = laneRows.filter((l) => !filters.corridor || String(l.corridorId) === filters.corridor)
+  const weekList = [...new Map(rows.map((r) => [r.week, r.weekIndex])).entries()]
+    .map(([week, weekIndex]) => ({ week, weekIndex }))
+    .filter((w) => inWeekBand(w.weekIndex))
+    .sort((a, b) => a.weekIndex - b.weekIndex)
+
+  // One cell per lane x week, aggregating the equipment types still in scope.
+  const cells: RateCell[] = []
+  for (const lane of heatLanes) {
+    for (const w of weekList) {
+      const group = matched.filter((r) => r.lane === lane.code && r.week === w.week)
+      if (!group.length) {
+        cells.push({
+          laneCode: lane.code, origin: lane.origin, dest: lane.dest, week: w.week,
+          weekIndex: w.weekIndex, fill: null, left: 0, capacity: 0, sold: 0, rows: 0, passes: false,
+        })
+        continue
+      }
+      const capacity = group.reduce((a, r) => a + r.capacity, 0)
+      const sold = group.reduce((a, r) => a + r.sold, 0)
+      const fill = Math.round((sold / capacity) * 100)
+      cells.push({
+        laneCode: lane.code, origin: lane.origin, dest: lane.dest, week: w.week,
+        weekIndex: w.weekIndex, fill, left: capacity - sold, capacity, sold,
+        rows: group.length, passes: cellPasses(fill, filters.fillBand),
+      })
+    }
+  }
+
+  const avgSuggested = matched.length
+    ? matched.reduce((a, r) => a + Number(r.suggested), 0) / matched.length
+    : 0
+
+  // An open cell (?hm=LANE|WEEK) becomes the reprice dialog.
+  const openCell = one('hm')
+  let repriceTarget: RepriceTarget | null = null
+  if (openCell) {
+    const [laneCode, week] = openCell.split('|')
+    const group = matched.filter((r) => r.lane === laneCode && r.week === week)
+    if (group.length) {
+      const capacity = group.reduce((a, r) => a + r.capacity, 0)
+      const sold = group.reduce((a, r) => a + r.sold, 0)
+      const avg = (pick: (r: typeof group[number]) => number) =>
+        Math.round(group.reduce((a, r) => a + pick(r), 0) / group.length)
+      repriceTarget = {
+        laneCode, week,
+        equipmentLabel: group.length > 1
+          ? t(lang, 'Tất cả loại cont đang chọn', 'All selected equipment')
+          : group[0].equipment,
+        current: avg((r) => Number(r.current)),
+        index: avg((r) => Number(r.index)),
+        suggested: avg((r) => Number(r.suggested)),
+        capacity, sold, left: capacity - sold,
+        fill: Math.round((sold / capacity) * 100),
+        daysOut: group[0].daysOut,
+        autoPricing: group[0].auto,
+      }
+    }
   }
 
   const unpublished = rows.filter((r) => !r.published).length
   const autoPriced = rows.filter((r) => r.auto).length
-  const belowIndex = rows.filter((r) => Number(r.current) < Number(r.index)).length
+  const totalCapacity = rows.reduce((a, r) => a + r.capacity, 0)
+  const unsold = rows.reduce((a, r) => a + r.remaining, 0)
 
   return (
     <>
@@ -164,110 +249,90 @@ export async function CapacityRatesPage({ lang, basePath, searchParams }: RouteP
         title={t(lang, 'Năng lực & Niêm yết giá', 'Capacity & Rates')}
         modules={['F04']}
         sub={t(lang,
-          'Bản đồ nhiệt mức lấp đầy theo tuyến và tuần. Giá chưa công bố không xuất hiện trong kết quả tìm kiếm của chủ hàng.',
-          'Fill-rate heatmap by lane and week. Unpublished rates do not appear in shipper search results.')}
+          'Bản đồ nhiệt mức lấp đầy theo tuyến và tuần. Nhấp vào ô để mở bảng điều chỉnh giá. Giá chưa công bố không xuất hiện trong kết quả tìm kiếm của chủ hàng.',
+          'Fill-rate heatmap by lane and week. Click a cell to reprice it. Unpublished rates do not appear in shipper search results.')}
       />
 
-      <div className="grid g4" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Ô giá', 'Rate cells')} value={num(rows.length)}
-          meta={t(lang, '8 tuyến × 13 tuần × 4 thiết bị', '8 lanes × 13 weeks × 4 equipment')} />
+      <div className="grid g5" style={{ marginBottom: 14 }}>
+        <KpiTile label={t(lang, 'Dòng bảng cước', 'Rate-card rows')} value={num(rows.length)}
+          meta={t(lang, '8 tuyến × 13 tuần × 4 loại cont', '8 lanes × 13 weeks × 4 equipment types')} />
+        <KpiTile label={t(lang, 'Sức chở đã công bố', 'Published capacity')} value={num(totalCapacity)} unit="TEU"
+          meta={t(lang, '13 tuần tới', 'next 13 weeks')} />
+        <KpiTile label={t(lang, 'Chỗ còn trống', 'Unsold capacity')} value={num(unsold)} unit="TEU"
+          meta={t(lang, 'doanh thu tiềm năng', 'revenue at risk')} metaTone="gd" />
         <KpiTile label={t(lang, 'Chưa công bố', 'Unpublished')} value={num(unpublished)}
           meta={t(lang, 'mất hiển thị', 'not visible')} metaTone="gd" />
-        <KpiTile label={t(lang, 'Định giá tự động', 'Auto-priced')} value={num(autoPriced)}
-          bar={(autoPriced / rows.length) * 100} />
-        <KpiTile label={t(lang, 'Dưới chỉ số tuyến', 'Below lane index')} value={num(belowIndex)}
-          meta={t(lang, 'đang giảm giá', 'discounting')} metaTone="d" />
+        <KpiTile label={t(lang, 'Định giá tự động', 'Auto-priced rows')} value={num(autoPriced)}
+          meta={t(lang, 'theo chỉ số VLX', 'index-linked')} metaTone="v" />
       </div>
 
-      <Card title={t(lang, 'Bản đồ nhiệt mức lấp đầy', 'Fill-rate heatmap')} bodyStyle={{ padding: 12 }}>
-        <div className="tbl-wrap" style={{ maxHeight: 'none' }}>
-          <table className="tbl" style={{ fontSize: 11 }}>
-            <thead>
-              <tr>
-                <th style={{ width: 96 }}>{t(lang, 'Tuyến', 'Lane')}</th>
-                {weeks.map((w) => <th key={w.week} className="c">{w.week}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {heatLanes.map((lane) => (
-                <tr key={lane}>
-                  <td><b style={{ fontSize: 11.5 }}>{lane}</b></td>
-                  {weeks.map((w) => {
-                    const v = cell.get(`${lane}|${w.weekIndex}`)
-                    return (
-                      <td key={w.week} className="c num" style={v === undefined ? undefined : heatStyle(v, 40, 100)}>
-                        {v === undefined ? '—' : Math.round(v)}
-                      </td>
-                    )
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <Legend items={[
-          { color: 'rgba(224,36,36,.42)', label: t(lang, 'Lấp đầy thấp', 'Low fill') },
-          { color: 'rgba(14,159,110,.42)', label: t(lang, 'Lấp đầy cao', 'High fill') },
-        ]} />
-      </Card>
+      <RateHeatmap
+        cells={cells} lanes={heatLanes} weeks={weekList} filters={filters}
+        totalRows={rows.length} matchedRows={matched.length} avgSuggested={avgSuggested}
+        lang={lang} basePath={basePath} searchParams={searchParams}
+      />
 
-      <div style={{ marginTop: 14 }}>
-        <DataTable
-          id="rc" lang={lang} basePath={basePath} searchParams={searchParams}
-          title={t(lang, 'Biểu giá theo tuần', 'Weekly rate card')} rows={rows}
-          searchPlaceholder={t(lang, 'Tìm tuyến, tuần, thiết bị…', 'Search lane, week, equipment…')}
-          search={(r) => `${r.lane} ${r.week} ${r.equipment}`}
-          filters={[
-            { key: 'lane', label: t(lang, 'Tuyến', 'Lane'), options: laneOpts, match: (r, v) => r.lane === v },
-            { key: 'eq', label: t(lang, 'Thiết bị', 'Equipment'), options: eqOpts, match: (r, v) => r.equipment === v },
-            {
-              key: 'pub', label: t(lang, 'Công bố', 'Published'),
-              options: [['1', t(lang, 'Đã công bố', 'Published')], ['0', t(lang, 'Chưa công bố', 'Unpublished')]],
-              match: (r, v) => (v === '1' ? r.published : !r.published),
-            },
-          ]}
-          columns={[
-            { key: 'lane', header: t(lang, 'Tuyến', 'Lane'), width: '11%', sortValue: (r) => r.lane, render: (r) => <b style={{ fontSize: 12 }}>{r.lane}</b> },
-            { key: 'week', header: t(lang, 'Tuần', 'Week'), cls: 'c', width: '8%', sortValue: (r) => r.weekIndex, render: (r) => <span className="num">{r.week}</span> },
-            { key: 'eq', header: t(lang, 'Thiết bị', 'Equipment'), width: '13%', sortValue: (r) => r.equipment, render: (r) => r.equipment },
-            {
-              key: 'price', header: t(lang, 'Giá hiện tại', 'Current'), cls: 'r', width: '13%',
-              sortValue: (r) => Number(r.current),
-              render: (r) => {
-                const delta = ((Number(r.current) - Number(r.index)) / Number(r.index)) * 100
-                return (
-                  <div>
-                    <b className="num">{usd(r.current)}</b>
-                    <div className="muted num">
-                      {t(lang, 'chỉ số', 'index')} {usd(r.index)} <span style={{ color: delta >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(delta)}</span>
-                    </div>
-                  </div>
-                )
-              },
-            },
-            { key: 'sug', header: t(lang, 'Gợi ý', 'Suggested'), cls: 'r', width: '10%', sortValue: (r) => Number(r.suggested), render: (r) => <span className="num muted">{usd(r.suggested)}</span> },
-            {
-              key: 'fill', header: t(lang, 'Lấp đầy', 'Fill'), width: '13%', sortValue: (r) => r.fill,
-              render: (r) => (
+      <DataTable
+        id="rc" lang={lang} basePath={basePath} searchParams={searchParams}
+        title={t(lang, 'Bảng cước đang niêm yết', 'Published rate card')} rows={rows}
+        searchPlaceholder={t(lang, 'Tìm tuyến, tuần, loại cont…', 'Search lane, week, equipment…')}
+        search={(r) => `${r.lane} ${r.week} ${r.equipment}`}
+        rowHref={(r) => tableHref(basePath, searchParams, { hm: `${r.lane}|${r.week}` })}
+        filters={[
+          { key: 'lane', label: t(lang, 'Tuyến', 'Lane'), options: laneOpts, match: (r, v) => r.lane === v },
+          { key: 'eq', label: t(lang, 'Thiết bị', 'Equipment'), options: eqOpts, match: (r, v) => r.equipment === v },
+          {
+            key: 'pub', label: t(lang, 'Công bố', 'Published'),
+            options: [['1', t(lang, 'Đã công bố', 'Published')], ['0', t(lang, 'Chưa công bố', 'Unpublished')]],
+            match: (r, v) => (v === '1' ? r.published : !r.published),
+          },
+        ]}
+        columns={[
+          { key: 'lane', header: t(lang, 'Tuyến', 'Lane'), width: '11%', sortValue: (r) => r.lane, render: (r) => <b style={{ fontSize: 12 }}>{r.lane}</b> },
+          { key: 'week', header: t(lang, 'Tuần', 'Week'), cls: 'c', width: '8%', sortValue: (r) => r.weekIndex, render: (r) => <span className="num">{r.week}</span> },
+          { key: 'eq', header: t(lang, 'Thiết bị', 'Equipment'), width: '13%', sortValue: (r) => r.equipment, render: (r) => r.equipment },
+          {
+            key: 'price', header: t(lang, 'Giá hiện tại', 'Current'), cls: 'r', width: '13%',
+            sortValue: (r) => Number(r.current),
+            render: (r) => {
+              const delta = ((Number(r.current) - Number(r.index)) / Number(r.index)) * 100
+              return (
                 <div>
-                  <Meter value={r.fill} width={64} />
-                  <div className="muted num">{num(r.sold)} / {num(r.capacity)} TEU</div>
+                  <b className="num">{usd(r.current)}</b>
+                  <div className="muted num">
+                    {t(lang, 'chỉ số', 'index')} {usd(r.index)}{' '}
+                    <span style={{ color: delta >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(delta)}</span>
+                  </div>
                 </div>
-              ),
+              )
             },
-            { key: 'left', header: t(lang, 'Còn lại', 'Remaining'), cls: 'r', width: '9%', sortValue: (r) => r.remaining, render: (r) => <span className="num">{num(r.remaining)}</span> },
-            {
-              key: 'st', header: t(lang, 'Trạng thái', 'Status'), cls: 'c', width: '11%',
-              render: (r) => (
-                <div className="flex wrap" style={{ gap: 3, justifyContent: 'center' }}>
-                  {r.published ? <Tag tone="u">{t(lang, 'Công bố', 'Live')}</Tag> : <Tag tone="gd">{t(lang, 'Nháp', 'Draft')}</Tag>}
-                  {r.auto ? <Tag tone="b">{t(lang, 'Tự động', 'Auto')}</Tag> : null}
-                </div>
-              ),
-            },
-          ]}
-        />
-      </div>
+          },
+          { key: 'sug', header: t(lang, 'Gợi ý', 'Suggested'), cls: 'r', width: '10%', sortValue: (r) => Number(r.suggested), render: (r) => <span className="num muted">{usd(r.suggested)}</span> },
+          {
+            key: 'fill', header: t(lang, 'Lấp đầy', 'Fill'), width: '13%', sortValue: (r) => r.fill,
+            render: (r) => (
+              <div>
+                <Meter value={r.fill} width={64} />
+                <div className="muted num">{num(r.sold)} / {num(r.capacity)} TEU</div>
+              </div>
+            ),
+          },
+          { key: 'left', header: t(lang, 'Còn lại', 'Remaining'), cls: 'r', width: '9%', sortValue: (r) => r.remaining, render: (r) => <span className="num">{num(r.remaining)}</span> },
+          {
+            key: 'st', header: t(lang, 'Trạng thái', 'Status'), cls: 'c', width: '11%',
+            render: (r) => (
+              <div className="flex wrap" style={{ gap: 3, justifyContent: 'center' }}>
+                {r.published ? <Tag tone="u">{t(lang, 'Công bố', 'Live')}</Tag> : <Tag tone="gd">{t(lang, 'Nháp', 'Draft')}</Tag>}
+                {r.auto ? <Tag tone="b">{t(lang, 'Tự động', 'Auto')}</Tag> : null}
+              </div>
+            ),
+          },
+        ]}
+      />
+
+      {repriceTarget ? (
+        <RepriceModal target={repriceTarget} lang={lang} basePath={basePath} searchParams={searchParams} />
+      ) : null}
     </>
   )
 }

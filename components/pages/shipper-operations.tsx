@@ -9,6 +9,8 @@ import {
 import { num, t, usd, type Lang } from '@/lib/i18n'
 import { carrierOptions, laneOptions, statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
+import { modalHref, openModalId } from '@/components/modal'
+import { ShipmentModal } from './record-modals'
 import type { RoutePageProps } from './page-props'
 
 const tone = (labels: Map<string, { label: string; tone: string }>, code: string): Tone =>
@@ -48,6 +50,9 @@ export async function ShipmentsPage({ lang, basePath, searchParams }: RoutePageP
     carrierOptions(),
   ])
 
+  const openId = openModalId(searchParams)
+  const openShipment = openId ? rows.find((r) => r.id === openId) ?? null : null
+
   const active = rows.filter((r) => r.status < 7)
   const atRisk = rows.filter((r) => r.risk === 2 && r.status < 7)
   const inTransit = rows.filter((r) => r.status === 4)
@@ -80,6 +85,7 @@ export async function ShipmentsPage({ lang, basePath, searchParams }: RoutePageP
       <DataTable
         id="ship" lang={lang} basePath={basePath} searchParams={searchParams}
         title={t(lang, 'Lô hàng', 'Shipments')} rows={rows}
+        rowHref={(r) => modalHref(basePath, searchParams, r.id)}
         searchPlaceholder={t(lang, 'Tìm mã lô, tàu, tuyến…', 'Search reference, vessel, lane…')}
         search={(r) => `${r.id} ${r.vessel} ${r.lane} ${r.carrier} ${r.shipper}`}
         filters={[
@@ -153,6 +159,23 @@ export async function ShipmentsPage({ lang, basePath, searchParams }: RoutePageP
           },
         ]}
       />
+
+      {openShipment ? (
+        <ShipmentModal
+          lang={lang} basePath={basePath} searchParams={searchParams}
+          shipment={{
+            id: openShipment.id, laneCode: openShipment.lane, carrier: openShipment.carrier,
+            shipper: openShipment.shipper, qty: openShipment.qty,
+            statusName: lang === 'vi' ? openShipment.statusVi : openShipment.statusEn,
+            statusOrdinal: openShipment.status, etd: openShipment.etd, eta: openShipment.eta,
+            value: Number(openShipment.value), cargoValue: Number(openShipment.value),
+            vessel: openShipment.vessel, risk: openShipment.risk,
+            hasEbl: openShipment.hasEbl, hasInsurance: openShipment.hasInsurance,
+            hasFinance: openShipment.hasFinance, inDispute: openShipment.inDispute,
+            docCount: openShipment.docCount, corridorId: 1,
+          }}
+        />
+      ) : null}
     </>
   )
 }

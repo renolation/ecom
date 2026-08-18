@@ -10,6 +10,8 @@ import {
 import { num, t, usd, type Lang } from '@/lib/i18n'
 import { laneOptions, productGroupOptions, statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
+import { modalHref, openModalId } from '@/components/modal'
+import { FleetModal } from './record-modals'
 import type { RoutePageProps } from './page-props'
 
 /** c_fleet — Transport Asset 360 (ui-2.html:2843). */
@@ -38,6 +40,11 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
       lane: fleetAssets.laneCode,
       utilisation: fleetAssets.utilisationPct,
       position: fleetAssets.position,
+      speed: fleetAssets.speedKnots,
+      fuel: fleetAssets.fuel,
+      co2: fleetAssets.co2,
+      crew: fleetAssets.crew,
+      maintOn: fleetAssets.maintOn,
       cii: fleetAssets.ciiGrade,
       certDays: fleetAssets.certDays,
       maintDue: fleetAssets.maintDueDays,
@@ -71,6 +78,9 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
     v: rows.filter((r) => r.status === s.code).length,
     c: ['var(--up)', 'var(--text-3)', 'var(--gold-500)', 'var(--down)', 'var(--brand-500)'][i % 5],
   })).filter((x) => x.v > 0)
+
+  const openId = openModalId(searchParams)
+  const openAsset = openId ? rows.find((r) => r.id === openId) ?? null : null
 
   return (
     <>
@@ -138,6 +148,7 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
       <DataTable
         id="fleet" lang={lang} basePath={basePath} searchParams={searchParams}
         title={t(lang, 'Danh sách phương tiện', 'Asset register')} rows={rows}
+        rowHref={(r) => modalHref(basePath, searchParams, r.id)}
         searchPlaceholder={t(lang, 'Tìm tên, IMO, vị trí…', 'Search name, IMO, position…')}
         search={(r) => `${r.id} ${r.name} ${r.imo} ${r.position} ${r.flag}`}
         filters={[
@@ -228,6 +239,29 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
           },
         ]}
       />
+
+      {openAsset ? (
+        <FleetModal
+          lang={lang} basePath={basePath} searchParams={searchParams}
+          asset={{
+            id: openAsset.id, name: openAsset.name, icon: openAsset.icon,
+            typeName: lang === 'vi' ? openAsset.typeVi : openAsset.typeEn,
+            isShip: openAsset.isShip, capacity: openAsset.capacity, unit: openAsset.unit,
+            builtYear: openAsset.built, age: openAsset.age, flag: openAsset.flag,
+            classSociety: openAsset.classSociety,
+            statusName: lang === 'vi' ? openAsset.statusVi : openAsset.statusEn,
+            ownerName: lang === 'vi' ? openAsset.ownerVi : openAsset.ownerEn,
+            laneCode: openAsset.lane, utilisation: openAsset.utilisation,
+            position: openAsset.position, speed: Number(openAsset.speed),
+            fuel: Number(openAsset.fuel), co2: openAsset.co2, cii: openAsset.cii,
+            insurance: '', certDays: openAsset.certDays, maintOn: openAsset.maintOn,
+            maintDue: openAsset.maintDue, opex: Number(openAsset.opex),
+            revenue: Number(openAsset.revenue), value: Number(openAsset.value),
+            financed: openAsset.financed, dscr: Number(openAsset.dscr),
+            crew: openAsset.crew, imo: openAsset.imo,
+          }}
+        />
+      ) : null}
     </>
   )
 }

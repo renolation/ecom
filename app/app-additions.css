@@ -103,3 +103,30 @@
 .tbl tr.row-link td:first-child { position: static; }
 .row-link-hit { position: absolute; inset: 0; z-index: 1; }
 .tbl tr.row-link td > *:not(.row-link-hit) { position: relative; z-index: 2; }
+
+/* Heatmap cell fills its td so the whole coloured square is the click target. */
+.heat-cell {
+  display: block; padding: 7px 4px; color: inherit;
+  text-decoration: none; border-radius: 5px;
+}
+.heat-cell:hover { outline: 2px solid var(--brand-500); outline-offset: -2px; }
+
+/* Filter dropdowns without client JS: a native <details> menu. */
+.hm-filter { position: relative; }
+.hm-filter-btn {
+  list-style: none; cursor: pointer; height: 29px; width: auto;
+  display: inline-flex; align-items: center; font-size: 12px; white-space: nowrap;
+}
+.hm-filter-btn::-webkit-details-marker { display: none; }
+.hm-filter-btn::after { content: '▾'; margin-left: 6px; color: var(--text-3); font-size: 10px; }
+.hm-filter-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 140; min-width: 180px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r); box-shadow: var(--shadow-lg); padding: 4px;
+}
+.hm-filter-menu a {
+  display: block; padding: 6px 9px; border-radius: 6px;
+  font-size: 12px; color: var(--text-2); text-decoration: none;
+}
+.hm-filter-menu a:hover { background: var(--surface-3); color: var(--text); }
+.hm-filter-menu a.on { background: var(--brand-100); color: var(--brand-600); font-weight: 700; }

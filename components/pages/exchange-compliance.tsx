@@ -10,6 +10,8 @@ import {
 import { num, t, usd, type Lang } from '@/lib/i18n'
 import { corridorOptions, statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
+import { modalHref, openModalId } from '@/components/modal'
+import { MemberModal } from './record-modals'
 import type { RoutePageProps } from './page-props'
 
 const tone = (labels: Map<string, { label: string; tone: string }>, code: string): Tone =>
@@ -54,6 +56,9 @@ export async function MembersPage({ lang, basePath, searchParams }: RoutePagePro
   const highRisk = rows.filter((r) => r.risk === 'high')
   const breach = rows.filter((r) => r.compliance === 'breach')
   const active = rows.filter((r) => r.active30d)
+
+  const openId = openModalId(searchParams)
+  const openMember = openId ? rows.find((r) => r.id === openId) ?? null : null
 
   const byType = types.map((ty, i) => ({
     label: lang === 'vi' ? ty.nameVi : ty.nameEn,
@@ -119,6 +124,7 @@ export async function MembersPage({ lang, basePath, searchParams }: RoutePagePro
       <DataTable
         id="mem" lang={lang} basePath={basePath} searchParams={searchParams}
         title={t(lang, 'Danh sách thành viên', 'Member register')} rows={rows} pageSize={14}
+        rowHref={(r) => modalHref(basePath, searchParams, r.id)}
         searchPlaceholder={t(lang, 'Tìm tên, mã thành viên…', 'Search name, member id…')}
         search={(r) => `${r.id} ${r.name} ${r.country} ${r.rating}`}
         filters={[
@@ -195,6 +201,29 @@ export async function MembersPage({ lang, basePath, searchParams }: RoutePagePro
           { key: 'joined', header: t(lang, 'Gia nhập', 'Joined'), cls: 'c', width: '10%', sortValue: (r) => r.joinedOn, render: (r) => <span className="num">{r.joinedOn}</span> },
         ]}
       />
+
+      {openMember ? (
+        <MemberModal
+          lang={lang} basePath={basePath} searchParams={searchParams}
+          member={{
+            id: openMember.id, name: openMember.name,
+            typeName: lang === 'vi' ? openMember.typeVi : openMember.typeEn,
+            sectorName: lang === 'vi' ? openMember.sectorVi : openMember.sectorEn,
+            country: openMember.country, rating: openMember.rating, score: openMember.score,
+            limit: Number(openMember.limit), utilisation: openMember.utilisation,
+            teu: openMember.teu, gmv: Number(openMember.gmv),
+            kybLabel: labels.get(openMember.kyb)?.label ?? openMember.kyb,
+            kybTone: labels.get(openMember.kyb)?.tone ?? 'n',
+            riskLabel: labels.get(openMember.risk)?.label ?? openMember.risk,
+            riskTone: labels.get(openMember.risk)?.tone ?? 'n',
+            complianceLabel: labels.get(openMember.compliance)?.label ?? openMember.compliance,
+            complianceTone: labels.get(openMember.compliance)?.tone ?? 'n',
+            tier: openMember.tier, joinedOn: openMember.joinedOn,
+            corridorId: openMember.corridorId, active30d: openMember.active30d,
+            repeat90d: false,
+          }}
+        />
+      ) : null}
     </>
   )
 }

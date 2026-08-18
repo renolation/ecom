@@ -10,6 +10,8 @@ import {
 import { num, t, usd, type Lang } from '@/lib/i18n'
 import { statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
+import { modalHref, openModalId } from '@/components/modal'
+import { CreditModal } from './record-modals'
 import type { RoutePageProps } from './page-props'
 
 const tone = (labels: Map<string, { label: string; tone: string }>, code: string): Tone =>
@@ -158,6 +160,9 @@ export async function CreditEnginePage({ lang, basePath, searchParams }: RoutePa
     statusLabelMap(lang),
   ])
 
+  const openId = openModalId(searchParams)
+  const openApp = openId ? rows.find((r) => r.id === openId) ?? null : null
+
   const approved = rows.filter((r) => r.decision === 'approve')
   const referred = rows.filter((r) => r.decision === 'refer')
   const declined = rows.filter((r) => r.decision === 'decline')
@@ -226,6 +231,7 @@ export async function CreditEnginePage({ lang, basePath, searchParams }: RoutePa
       <DataTable
         id="cr" lang={lang} basePath={basePath} searchParams={searchParams}
         title={t(lang, 'Hồ sơ tín dụng', 'Credit applications')} rows={rows} pageSize={14}
+        rowHref={(r) => modalHref(basePath, searchParams, r.id)}
         searchPlaceholder={t(lang, 'Tìm mã hồ sơ, thành viên…', 'Search reference, member…')}
         search={(r) => `${r.id} ${r.member} ${r.bank}`}
         filters={[
@@ -284,6 +290,23 @@ export async function CreditEnginePage({ lang, basePath, searchParams }: RoutePa
           },
         ]}
       />
+
+      {openApp ? (
+        <CreditModal
+          lang={lang} basePath={basePath} searchParams={searchParams}
+          application={{
+            id: openApp.id, member: openApp.member, memberId: openApp.memberId,
+            rating: openApp.rating,
+            productName: lang === 'vi' ? openApp.productVi : openApp.productEn,
+            amount: Number(openApp.amount), score: openApp.score,
+            decisionLabel: labels.get(openApp.decision)?.label ?? openApp.decision,
+            decisionTone: labels.get(openApp.decision)?.tone ?? 'n',
+            rate: Number(openApp.rate), pd: Number(openApp.pd),
+            turnaround: Number(openApp.turnaround), autoDecided: openApp.autoDecided,
+            appliedOn: openApp.appliedOn, bank: openApp.bank,
+          }}
+        />
+      ) : null}
     </>
   )
 }
