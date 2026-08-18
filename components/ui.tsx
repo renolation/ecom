@@ -159,3 +159,13 @@ export function initials(s: string): string {
   const words = s.replace(/[^A-Za-zÀ-ỹ ]/g, '').trim().split(/\s+/)
   return ((words[0]?.[0] ?? '?') + (words[1]?.[0] ?? '')).toUpperCase().slice(0, 2)
 }
+
+/** Autonomy tier chip — ui-2.html:1153. L2 and L3 always require a human. */
+export function TierPill({ tier, lang }: { tier: 1 | 2 | 3; lang: Lang }) {
+  const label = {
+    1: `L1 · ${t(lang, 'Tự động', 'Automated')}`,
+    2: `L2 · ${t(lang, 'Đề xuất', 'Advisory')}`,
+    3: `L3 · ${t(lang, 'Không tự quyết', 'Human-only')}`,
+  }[tier]
+  return <span className={`tier l${tier}`}>{label}</span>
+}

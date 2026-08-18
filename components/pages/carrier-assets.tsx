@@ -1,23 +1,38 @@
+import Link from 'next/link'
 import { asc, eq, sql } from 'drizzle-orm'
-import { Donut } from '@/components/charts'
+import { Donut, LineChart, walk } from '@/components/charts'
 import { DataTable } from '@/components/table/data-table'
 import { Card, KpiTile, Legend, Meter, PageHeader, Tag } from '@/components/ui'
 import { db } from '@/lib/db'
 import {
-  assetTypes, fleetAssets, fleetStatuses, lifecycleStages, ownershipTypes, productGroups,
+  assetTypes, corridors, fleetAssets, fleetStatuses, lifecycleStages, ownershipTypes, productGroups,
   productIndustries, productStatuses, products, settlements, settlementTriggers,
 } from '@/db/schema'
-import { num, t, usd, type Lang } from '@/lib/i18n'
+import { monthLabels, num, t, usd, type Lang } from '@/lib/i18n'
 import { laneOptions, productGroupOptions, statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
 import { modalHref, openModalId } from '@/components/modal'
 import { FleetModal } from './record-modals'
 import type { RoutePageProps } from './page-props'
 
-/** c_fleet — Transport Asset 360 (ui-2.html:2843). */
+/** ui-2.html:2894 — CII bands. D twice or E once forces a corrective action plan. */
+const CII_BANDS: Array<[string, string, string, string]> = [
+  ['A', 'Vượt yêu cầu', 'Superior', 'var(--up)'],
+  ['B', 'Đạt tốt', 'Good', 'var(--up)'],
+  ['C', 'Đạt', 'Compliant', 'var(--gold-500)'],
+  ['D', 'Dưới chuẩn', 'Below', 'var(--down)'],
+  ['E', 'Không đạt', 'Inferior', 'var(--down)'],
+]
+
+const OWNERSHIP_COLORS: Record<string, string> = {
+  own: 'var(--brand-500)', lease: 'var(--gold-500)', charter: 'var(--violet)',
+}
+
+/** c_fleet — Transport Asset 360 (ui-2.html:2830). */
 export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps) {
-  const [rows, types, statuses, owners, laneOpts] = await Promise.all([
+  const [rows, types, statuses, owners, corridorRows, laneOpts] = await Promise.all([
     db.select({
+
       id: fleetAssets.id,
       typeCode: fleetAssets.assetTypeCode,
       typeVi: assetTypes.nameVi,
@@ -54,6 +69,7 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
       financed: fleetAssets.isFinanced,
       dscr: fleetAssets.dscr,
       imo: fleetAssets.imo,
+      corridorId: fleetAssets.corridorId,
     })
       .from(fleetAssets)
       .innerJoin(assetTypes, eq(assetTypes.code, fleetAssets.assetTypeCode))
@@ -63,21 +79,27 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
     db.select().from(assetTypes).orderBy(asc(assetTypes.ord)),
     db.select().from(fleetStatuses),
     db.select().from(ownershipTypes),
+    db.select({ id: corridors.id, nameVi: corridors.nameVi, nameEn: corridors.nameEn })
+      .from(corridors).orderBy(asc(corridors.id)),
     laneOptions(),
   ])
 
-  const attention = rows.filter((r) => r.certDays < 45 || r.maintDue < 21)
+  const ships = rows.filter((r) => r.isShip)
   const active = rows.filter((r) => r.status === 'active')
-  const totalValue = rows.reduce((a, r) => a + Number(r.value), 0)
-  const totalOpex = rows.reduce((a, r) => a + Number(r.opex), 0)
-  const totalRevenue = rows.reduce((a, r) => a + Number(r.revenue), 0)
+  const certExpiring = rows.filter((r) => r.certDays < 45)
+  const maintDue = rows.filter((r) => r.maintDue < 21)
+  const alerts = rows.filter((r) => r.certDays < 45 || r.maintDue < 21)
   const avgUtil = rows.reduce((a, r) => a + r.utilisation, 0) / rows.length
+  const totalValue = rows.reduce((a, r) => a + Number(r.value), 0)
 
-  const byStatus = statuses.map((s, i) => ({
-    label: lang === 'vi' ? s.nameVi : s.nameEn,
-    v: rows.filter((r) => r.status === s.code).length,
-    c: ['var(--up)', 'var(--text-3)', 'var(--gold-500)', 'var(--down)', 'var(--brand-500)'][i % 5],
-  })).filter((x) => x.v > 0)
+  const financed = rows.filter((r) => r.financed)
+  const financedValue = financed.reduce((a, r) => a + Number(r.value), 0)
+  const weakDscr = financed.filter((r) => Number(r.dscr) < 1.2)
+
+  const ciiCounts = Object.fromEntries(
+    CII_BANDS.map(([grade]) => [grade, ships.filter((s) => s.cii === grade).length]),
+  ) as Record<string, number>
+  const ciiMax = Math.max(...Object.values(ciiCounts), 1)
 
   const openId = openModalId(searchParams)
   const openAsset = openId ? rows.find((r) => r.id === openId) ?? null : null
@@ -85,64 +107,241 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'Hãng tàu · Tài sản & Sản phẩm', 'Carrier · Assets & Products')}
+        crumb={t(lang, 'Hãng tàu · Tài sản', 'Carrier · Assets')}
         title={t(lang, 'Phương tiện vận tải 360', 'Transport Asset 360')}
-        modules={['F09']}
+        modules={['F09', 'F14']}
         sub={t(lang,
-          'Toàn bộ đội phương tiện: tàu, sà lan, đầu kéo, container và thiết bị bãi — kèm khai thác, chứng chỉ, chi phí và tài trợ.',
-          'The whole fleet — vessels, barges, tractors, containers and yard equipment — with utilisation, certificates, cost and financing.')}
+          'Toàn bộ phương tiện và thiết bị khai thác trên một hồ sơ: thông số kỹ thuật, khai thác, tuân thủ, bảo dưỡng, phát thải và tài chính — dùng chung cho hãng tàu và nhà cung cấp logistics.',
+          'Every vessel, vehicle and asset in one record: specification, utilisation, compliance, maintenance, emissions and finance — shared by carriers and logistics providers.')}
+        actions={
+          <>
+            <span className="btn">⬇ {t(lang, 'Xuất hồ sơ', 'Export')}</span>
+            <Link className="btn p" href={modalHref(basePath, searchParams, rows[0].id)} scroll={false}>
+              {t(lang, 'Xem hồ sơ mẫu', 'Open a sample record')}
+            </Link>
+          </>
+        }
       />
 
       <div className="grid g5" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Tổng phương tiện', 'Total assets')} value={num(rows.length)}
-          meta={t(lang, `${num(active.length)} đang khai thác`, `${num(active.length)} in service`)} />
-        <KpiTile label={t(lang, 'Cần chú ý', 'Needs attention')} value={num(attention.length)}
-          meta={t(lang, 'chứng chỉ / bảo dưỡng', 'certificates / maintenance')} metaTone="d" />
-        <KpiTile label={t(lang, 'Khai thác bình quân', 'Average utilisation')} value={num(avgUtil, 1)} unit="%"
-          bar={avgUtil} />
-        <KpiTile label={t(lang, 'Giá trị tài sản', 'Asset value')} value={num(totalValue)}
-          unit={t(lang, 'tỷ đ', 'bn VND')} />
-        <KpiTile label={t(lang, 'Doanh thu / chi phí', 'Revenue / opex')}
-          value={num(totalRevenue / totalOpex, 2)} unit="×"
-          meta={t(lang, `${num(totalOpex)} tỷ chi phí`, `${num(totalOpex)}bn opex`)}
-          metaTone={totalRevenue > totalOpex ? 'u' : 'd'} />
+        <KpiTile label={t(lang, 'Tổng phương tiện & thiết bị', 'Total assets')} value={num(rows.length)}
+          meta={t(lang, `${num(ships.length)} phương tiện thuỷ`, `${num(ships.length)} waterborne`)}
+          spark={walk(90, 20, 0.04, 12)} />
+        <KpiTile label={t(lang, 'Đang khai thác', 'In service')} value={num(active.length)}
+          meta={`${Math.round((active.length / rows.length) * 100)}% ${t(lang, 'đội tàu', 'of fleet')}`}
+          metaTone="u" />
+        <KpiTile label={t(lang, 'Hiệu suất khai thác BQ', 'Average utilisation')} value={num(avgUtil, 1)}
+          unit="%" meta="+4,2 pp YoY" metaTone="u" spark={walk(78, 20, 0.03, 22)} sparkColor="var(--up)" />
+        <KpiTile label={t(lang, 'Chứng chỉ sắp hết hạn', 'Certificates expiring')} value={num(certExpiring.length)}
+          meta={t(lang, 'trong 45 ngày', 'within 45 days')} metaTone="d" />
+        <KpiTile label={t(lang, 'Đến hạn bảo dưỡng', 'Maintenance due')} value={num(maintDue.length)}
+          meta={t(lang, 'trong 21 ngày', 'within 21 days')} metaTone="gd" />
       </div>
 
-      <div className="grid g-1-2" style={{ marginBottom: 14 }}>
-        <Card title={t(lang, 'Theo trạng thái', 'By status')}>
-          <div style={{ display: 'grid', placeItems: 'center' }}>
-            <Donut items={byStatus} size={150} />
-          </div>
-          <Legend items={byStatus.map((s) => ({ color: s.c, label: `${s.label} (${s.v})` }))} />
-        </Card>
-        <Card title={t(lang, 'Theo loại phương tiện', 'By asset class')}>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>{t(lang, 'Loại', 'Class')}</th>
-                <th className="r">{t(lang, 'Số lượng', 'Count')}</th>
-                <th>{t(lang, 'Khai thác', 'Utilisation')}</th>
-                <th className="r">{t(lang, 'Giá trị', 'Value')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {types.map((ty) => {
-                const group = rows.filter((r) => r.typeCode === ty.code)
-                if (!group.length) return null
-                const util = group.reduce((a, r) => a + r.utilisation, 0) / group.length
-                const val = group.reduce((a, r) => a + Number(r.value), 0)
-                return (
-                  <tr key={ty.code}>
-                    <td><span style={{ marginRight: 6 }}>{ty.icon}</span><b style={{ fontSize: 12 }}>{lang === 'vi' ? ty.nameVi : ty.nameEn}</b></td>
-                    <td className="r num">{group.length}</td>
-                    <td><Meter value={util} width={70} /></td>
-                    <td className="r num">{num(val)}</td>
+      <div className="grid g-3-2" style={{ marginBottom: 14 }}>
+        <div className="stack">
+          <Card title={t(lang, 'Cơ cấu đội phương tiện', 'Fleet composition')}
+            right={<span className="sub">{t(lang, 'Theo loại tài sản và trạng thái khai thác', 'By asset type and operating status')}</span>}
+            bodyStyle={{ padding: 0 }}>
+            <div className="tbl-wrap" style={{ maxHeight: 'none' }}>
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'Loại tài sản', 'Asset type')}</th>
+                    <th className="r">{t(lang, 'Số lượng', 'Count')}</th>
+                    <th className="r">{t(lang, 'Tổng sức chở', 'Total capacity')}</th>
+                    <th style={{ width: 130 }}>{t(lang, 'Hiệu suất BQ', 'Avg utilisation')}</th>
+                    <th className="c">{t(lang, 'Đang khai thác', 'In service')}</th>
+                    <th className="r">{t(lang, 'Doanh thu 12T', '12M revenue')}</th>
                   </tr>
+                </thead>
+                <tbody>
+                  {types.map((ty) => {
+                    const g = rows.filter((r) => r.typeCode === ty.code)
+                    if (!g.length) return null
+                    const u = Math.round(g.reduce((a, r) => a + r.utilisation, 0) / g.length)
+                    const cap = g.reduce((a, r) => a + r.capacity, 0)
+                    const rev = g.reduce((a, r) => a + Number(r.revenue), 0)
+                    const inService = g.filter((r) => r.status === 'active').length
+                    return (
+                      <tr key={ty.code}>
+                        <td>
+                          <div className="flex" style={{ gap: 8 }}>
+                            <span style={{ fontSize: 15 }}>{ty.icon}</span>
+                            <b style={{ fontSize: 12.5 }}>{lang === 'vi' ? ty.nameVi : ty.nameEn}</b>
+                          </div>
+                        </td>
+                        <td className="r num">{g.length}</td>
+                        <td className="r num">{num(cap)} <span className="muted">{g[0].unit}</span></td>
+                        <td>
+                          <Meter value={u} width={68}
+                            color={u > 85 ? 'var(--up)' : u > 70 ? 'var(--brand-500)' : 'var(--gold-500)'} />
+                        </td>
+                        <td className="c num">{inService}/{g.length}</td>
+                        <td className="r num" style={{ fontWeight: 700 }}>
+                          {num(rev, rev < 10 ? 2 : 0)} {t(lang, 'tỷ', 'bn')}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card
+            title={t(lang, 'Hiệu suất khai thác & mức sẵn sàng 12 tháng',
+              'Utilisation & availability, trailing 12 months')}
+            right={<Legend items={[
+              { color: 'var(--brand-500)', label: t(lang, 'Hiệu suất khai thác', 'Utilisation') },
+              { color: 'var(--up)', label: t(lang, 'Mức sẵn sàng kỹ thuật', 'Technical availability') },
+            ]} />}
+            footer={t(lang,
+              'Mức sẵn sàng kỹ thuật là tỷ lệ thời gian phương tiện đủ điều kiện khai thác (không nằm bảo dưỡng, lên đà hay hết chứng chỉ). Khoảng cách giữa hai đường là sức chở có thể bán thêm.',
+              'Technical availability is the share of time an asset is fit to operate — not in maintenance, dry dock, or out of certificate. The gap between the two lines is sellable capacity.')}>
+            <LineChart
+              series={[
+                { data: walk(63, 12, 0.06, 7).map((v) => Math.min(96, Math.round(v))), color: 'var(--brand-500)', fill: true },
+                { data: walk(88, 12, 0.03, 19).map((v) => Math.min(99, Math.round(v))), color: 'var(--up)', dash: true },
+              ]}
+              height={190}
+              labels={monthLabels(lang)}
+              fmt={(v) => `${Math.round(v)}%`}
+            />
+          </Card>
+
+          <Card title={t(lang, 'Cơ cấu sở hữu & phân bổ hành lang', 'Ownership mix & corridor allocation')}>
+            <div className="flex" style={{ gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ flex: '0 0 auto' }}>
+                <Donut size={132} thickness={20}
+                  items={owners.map((o) => ({
+                    v: rows.filter((r) => r.ownership === o.code).length,
+                    c: OWNERSHIP_COLORS[o.code] ?? 'var(--text-3)',
+                  }))} />
+              </div>
+              <div style={{ flex: 1, minWidth: 190 }}>
+                {owners.map((o) => {
+                  const g = rows.filter((r) => r.ownership === o.code)
+                  const val = g.reduce((a, r) => a + Number(r.value), 0)
+                  return (
+                    <div key={o.code} className="between"
+                      style={{ padding: '5px 0', borderBottom: '1px dashed var(--line)' }}>
+                      <span style={{ fontSize: 11.5 }}>
+                        <i style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 2, background: OWNERSHIP_COLORS[o.code] ?? 'var(--text-3)', marginRight: 6 }} />
+                        {lang === 'vi' ? o.nameVi : o.nameEn}
+                      </span>
+                      <span className="num" style={{ fontSize: 11.5 }}>
+                        <b>{g.length}</b> <span className="muted">· {num(val, 0)} {t(lang, 'tỷ', 'bn')}</span>
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+            <div style={{ marginTop: 11 }}>
+              {corridorRows.map((c) => {
+                const g = rows.filter((r) => r.corridorId === c.id)
+                const u = Math.round(g.reduce((a, r) => a + r.utilisation, 0) / (g.length || 1))
+                return (
+                  <div key={c.id} className="between"
+                    style={{ padding: '6px 0', borderBottom: '1px dashed var(--line)' }}>
+                    <span style={{ fontSize: 11.5 }}>
+                      <b>{String(c.id).padStart(2, '0')}</b> · {lang === 'vi' ? c.nameVi : c.nameEn}
+                    </span>
+                    <div className="meter">
+                      <span className="muted">{g.length} {t(lang, 'phương tiện', 'assets')}</span>
+                      <Meter value={u} width={64}
+                        color={u > 80 ? 'var(--up)' : u > 65 ? 'var(--brand-500)' : 'var(--gold-500)'} />
+                    </div>
+                  </div>
                 )
               })}
-            </tbody>
-          </table>
-        </Card>
+            </div>
+          </Card>
+        </div>
+
+        <div className="stack">
+          <Card title={t(lang, 'Cảnh báo tuân thủ & bảo dưỡng', 'Compliance & maintenance alerts')}
+            right={<Tag tone="d">{alerts.length}</Tag>}
+            footer={t(lang,
+              `Xem toàn bộ ${alerts.length} cảnh báo trong hồ sơ phương tiện ↓`,
+              `View all ${alerts.length} alerts in the asset register ↓`)}>
+            {alerts
+              .slice()
+              .sort((a, b) => Math.min(a.certDays, a.maintDue) - Math.min(b.certDays, b.maintDue))
+              .slice(0, 6)
+              .map((a) => {
+                const critical = a.certDays < 0 || a.maintDue < 0
+                const parts: string[] = []
+                if (a.certDays < 45) {
+                  parts.push(a.certDays < 0
+                    ? t(lang, `Chứng chỉ đã hết hạn ${Math.abs(a.certDays)} ngày`,
+                      `Certificate expired ${Math.abs(a.certDays)} days ago`)
+                    : t(lang, `Chứng chỉ còn ${a.certDays} ngày`, `Certificate due in ${a.certDays} days`))
+                }
+                if (a.maintDue < 21) {
+                  parts.push(a.maintDue < 0
+                    ? t(lang, `Bảo dưỡng quá hạn ${Math.abs(a.maintDue)} ngày`,
+                      `Maintenance overdue by ${Math.abs(a.maintDue)} days`)
+                    : t(lang, `Bảo dưỡng sau ${a.maintDue} ngày`, `Maintenance in ${a.maintDue} days`))
+                }
+                return (
+                  <Link key={a.id} href={modalHref(basePath, searchParams, a.id)} className="cq-row" scroll={false}>
+                    <span style={{ fontSize: 16 }}>{a.icon}</span>
+                    <div style={{ flex: 1 }}>
+                      <b style={{ fontSize: 11.5 }}>{a.name}</b>
+                      <div className="muted">{parts.join(' · ')}</div>
+                    </div>
+                    <Tag tone={critical ? 'd' : 'gd'}>
+                      {critical ? t(lang, 'Quá hạn', 'Overdue') : t(lang, 'Sắp tới', 'Due')}
+                    </Tag>
+                  </Link>
+                )
+              })}
+          </Card>
+
+          <Card title={t(lang, 'Phát thải & xếp hạng CII', 'Emissions & CII rating')}>
+            {CII_BANDS.map(([grade, dVi, dEn, color]) => (
+              <div key={grade} className="between" style={{ padding: '5px 0' }}>
+                <span style={{ fontSize: 12 }}><b>{grade}</b> · {t(lang, dVi, dEn)}</span>
+                <div className="meter">
+                  <div className="bar" style={{ width: 90 }}>
+                    <i style={{ width: `${(ciiCounts[grade] / ciiMax) * 100}%`, background: color }} />
+                  </div>
+                  <b>{ciiCounts[grade]}</b>
+                </div>
+              </div>
+            ))}
+            <div className="note">
+              {t(lang,
+                'Tàu hạng D hai năm liên tiếp hoặc hạng E một năm phải có kế hoạch hành động khắc phục. Dữ liệu phát thải này cũng là đầu vào cho tín dụng xanh gắn hiệu quả vận tải.',
+                'A vessel rated D for two consecutive years or E for one year needs a corrective action plan. This emissions data also feeds green-linked freight credit.')}
+            </div>
+          </Card>
+
+          <Card title={t(lang, 'Tài sản đang được tài trợ', 'Assets under financing')}
+            right={<Tag tone="b">F09</Tag>}>
+            {([
+              [t(lang, 'Số tài sản có khoản vay', 'Assets with a facility'), <b className="num">{financed.length}</b>],
+              [t(lang, 'Giá trị tài sản thế chấp', 'Pledged asset value'),
+                <b className="num">{num(financedValue, 0)} {t(lang, 'tỷ', 'bn')}</b>],
+              [t(lang, 'Tỷ trọng trên tổng đội', 'Share of total fleet value'),
+                <b className="num">{num((financedValue / totalValue) * 100, 1)}%</b>],
+              [t(lang, 'DSCR dưới 1,20x', 'DSCR below 1.20x'),
+                <Tag tone={weakDscr.length ? 'd' : 'u'}>{weakDscr.length}</Tag>],
+            ] as Array<[string, React.ReactNode]>).map(([label, value]) => (
+              <div key={label} className="between" style={{ padding: '5px 0' }}>
+                <span style={{ fontSize: 11.5 }}>{label}</span>
+                {value}
+              </div>
+            ))}
+            <div className="note">
+              {t(lang,
+                'Hồ sơ phương tiện là nguồn dữ liệu gốc cho Data Room tài trợ tài sản của định chế tài chính: đăng kiểm, bảo hiểm, khai thác và phát thải chỉ chia sẻ trong phạm vi thành viên đã đồng ý.',
+                'The asset register is the source of record for the lender-facing asset finance Data Room: class, insurance, utilisation and emissions are shared strictly within the member consent scope.')}
+            </div>
+          </Card>
+        </div>
       </div>
 
       <DataTable

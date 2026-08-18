@@ -1,11 +1,14 @@
 import { asc, eq, sql } from 'drizzle-orm'
 import { DataTable } from '@/components/table/data-table'
-import { BoundaryNote, Card, KpiTile, Meter, PageHeader, Tag } from '@/components/ui'
+import {
+  BoundaryNote, Card, KpiTile, Meter, OrgCell, PageHeader, Tag, TierPill,
+} from '@/components/ui'
+import { Sparkline, walk } from '@/components/charts'
 import { db } from '@/lib/db'
 import {
   agentActions, agentRuns, aiAgents, cdpAccounts, cdpMergeQueue, cdpMergeRecords,
   cdpNbaActions, cdpSegments, consentPurposes, decisionRights, licenceMatrix, members,
-  sandboxPrograms,
+  memberTypes, sandboxPrograms, sectors,
 } from '@/db/schema'
 import { num, t, type Lang } from '@/lib/i18n'
 import { statusLabelMap, statusOptions } from '@/lib/queries/lookups'
@@ -443,12 +446,36 @@ export async function NeutralityPage({ lang }: RoutePageProps) {
   )
 }
 
-/** cdp_360 — Unified customers (ui-2.html:4792). */
+/** ui-2.html:4827 — the six source systems feeding the lakehouse, with freshness. */
+const CDP_SOURCES: Array<[string, string, string, string, string, string, number]> = [
+  ['TOS cảng', 'TOS port', 'Sự kiện hạ bãi, xếp dỡ, sản lượng', 'Gate, handling and volume events',
+    'API stream', 'API stream', 99.2],
+  ['Oracle EBS', 'Oracle EBS', 'Hoá đơn, khoản phải thu, hợp đồng', 'Invoices, receivables, contracts',
+    'API/batch', 'API/batch', 99.6],
+  ['CRM / Forwarding', 'CRM / Forwarding', 'Liên hệ, cơ hội, lịch sử tương tác',
+    'Contacts, opportunities, interaction history', 'API pull', 'API pull', 98.4],
+  ['Nhà cung cấp AIS', 'AIS provider', 'Vị trí tàu, ETA, hành trình', 'Vessel position, ETA, voyage',
+    'API stream', 'API stream', 97.1],
+  ['EDI manifest', 'EDI manifest', 'Danh sách hàng theo chuyến', 'Cargo manifest by voyage',
+    'API + trích xuất', 'API + parser', 96.8],
+  ['Nền tảng VLX', 'VLX platform', 'Chỉ giao dịch của Gemadept trên nền tảng',
+    'Only Gemadept’s own platform transactions', 'API', 'API', 99.9],
+]
+
+/** ui-2.html:4820 — segment cards cycle through these icons and bar colours. */
+const SEGMENT_ICONS = ['⭐', '🔀', '🚢', '🌏', '⚠️', '💤']
+const SEGMENT_COLORS = ['var(--up)', 'var(--brand-500)', 'var(--violet)', 'var(--gold-500)', 'var(--down)', 'var(--text-3)']
+
+/** cdp_360 — Unified Customers, Gemadept member view (ui-2.html:4792). */
 export async function CdpUnifiedPage({ lang, basePath, searchParams }: RoutePageProps) {
-  const [rows, segments, queue, records, labels] = await Promise.all([
+  const [rows, segments, queue, records, labels, memberTypeRows] = await Promise.all([
     db.select({
       memberId: cdpAccounts.memberId,
       member: members.name,
+      memberType: members.typeCode,
+      teu: members.teu,
+      sectorVi: sectors.nameVi,
+      sectorEn: sectors.nameEn,
       segmentId: cdpAccounts.segmentId,
       segmentVi: cdpSegments.nameVi,
       segmentEn: cdpSegments.nameEn,
@@ -465,6 +492,7 @@ export async function CdpUnifiedPage({ lang, basePath, searchParams }: RoutePage
     })
       .from(cdpAccounts)
       .innerJoin(members, eq(members.id, cdpAccounts.memberId))
+      .innerJoin(sectors, eq(sectors.id, members.sectorId))
       .innerJoin(cdpSegments, eq(cdpSegments.id, cdpAccounts.segmentId))
       .innerJoin(cdpNbaActions, eq(cdpNbaActions.id, cdpAccounts.nbaActionId))
       .orderBy(asc(cdpAccounts.memberId)),
@@ -472,120 +500,227 @@ export async function CdpUnifiedPage({ lang, basePath, searchParams }: RoutePage
     db.select().from(cdpMergeQueue).orderBy(asc(cdpMergeQueue.ord)),
     db.select().from(cdpMergeRecords).orderBy(asc(cdpMergeRecords.queueId), asc(cdpMergeRecords.ord)),
     statusLabelMap(lang),
+    db.select({ code: memberTypes.code, nameVi: memberTypes.nameVi, nameEn: memberTypes.nameEn })
+      .from(memberTypes).orderBy(asc(memberTypes.ord)),
   ])
 
-  const serviceKeys: Array<[string, string, string]> = [
-    ['port', 'Cảng', 'Port'], ['truck', 'Vận tải bộ', 'Trucking'],
-    ['wh', 'Kho', 'Warehouse'], ['cold', 'Chuỗi lạnh', 'Cold'], ['air', 'Hàng không', 'Air'],
+  const serviceIcons: Array<[string, string]> = [
+    ['port', '⚓'], ['truck', '🚛'], ['wh', '🏭'], ['cold', '❄️'], ['air', '✈️'],
   ]
+  const typeName = new Map(memberTypeRows.map((r) => [r.code, lang === 'vi' ? r.nameVi : r.nameEn]))
+  const avgSow = rows.reduce((a, r) => a + r.shareOfWallet, 0) / rows.length
+
+  const segmentCounts = [...rows.reduce((m, r) => {
+    const k = lang === 'vi' ? r.segmentVi : r.segmentEn
+    return m.set(k, (m.get(k) ?? 0) + 1)
+  }, new Map<string, number>())]
+    .map(([k, v]) => ({ k, v }))
+    .sort((a, b) => b.v - a.v)
 
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'CDP 360', 'CDP 360')}
+        crumb={t(lang, 'CDP 360 · Thành viên Gemadept', 'CDP 360 · Gemadept member view')}
         title={t(lang, 'Khách hàng hợp nhất', 'Unified Customers')}
+        modules={['F11']}
         sub={t(lang,
-          'Hồ sơ khách hàng hợp nhất từ nhiều hệ thống nguồn. Chỉ hiển thị dữ liệu giao dịch giữa bạn và khách hàng của bạn.',
-          'Customer profiles unified across source systems. Only transactions between you and your own customers are shown.')}
+          'Định danh hợp nhất cấp tài khoản theo mã số thuế và cây tập đoàn. AI đề xuất hợp nhất, con người phê duyệt. Nền tảng dùng lại thiết kế này cho module định danh của mình, nhưng dữ liệu tách biệt.',
+          'Account-level identity resolution by tax ID and corporate tree. AI proposes merges, humans approve. The platform reuses this design for its own identity module, but the data stays separate.')}
+        actions={
+          <>
+            <span className="btn">⬇ {t(lang, 'Xuất danh sách', 'Export')}</span>
+            <span className="btn p">{t(lang, 'Mời khách hàng lên nền tảng', 'Invite customers to the platform')}</span>
+          </>
+        }
       />
 
       <BoundaryNote lang={lang}>
-        {t(lang, ' — phạm vi thành viên. Giao dịch của khách hàng với nhà cung cấp khác không hiển thị ở đây.',
-          ' — member scope. A customer’s transactions with other providers are not visible here.')}
+        {t(lang,
+          'Toàn bộ dữ liệu trên màn hình này thuộc phạm vi thành viên Gemadept: chỉ các giao dịch giữa Gemadept và khách hàng của Gemadept. CDP không phải hệ thống chủ dữ liệu khách hàng của nền tảng và không thấy dữ liệu của hãng tàu hay ngân hàng khác. Dùng dữ liệu này cho tiếp thị cần sự đồng ý riêng của từng khách hàng.',
+          'Everything on this screen is within Gemadept’s member scope: only transactions between Gemadept and Gemadept’s own customers. The CDP is not the platform’s customer master and cannot see other carriers’ or banks’ data. Using this data for marketing requires each customer’s separate consent.')}
       </BoundaryNote>
 
       <div className="grid g5" style={{ margin: '14px 0' }}>
-        <KpiTile label={t(lang, 'Khách hàng', 'Customers')} value={num(rows.length)} />
-        <KpiTile label={t(lang, 'Nguy cơ rời bỏ cao', 'High churn risk')}
-          value={num(rows.filter((r) => r.churn === 'high').length)} metaTone="d" />
-        <KpiTile label={t(lang, 'Share of wallet TB', 'Average wallet share')}
-          value={num(rows.reduce((a, r) => a + r.shareOfWallet, 0) / rows.length, 1)} unit="%"
-          bar={rows.reduce((a, r) => a + r.shareOfWallet, 0) / rows.length} />
-        <KpiTile label={t(lang, 'Chờ hợp nhất', 'Awaiting merge')} value={num(queue.length)}
-          meta={t(lang, `${num(records.length)} bản ghi nguồn`, `${num(records.length)} source records`)} metaTone="gd" />
-        <KpiTile label={t(lang, 'Doanh thu', 'Revenue')}
-          value={num(rows.reduce((a, r) => a + Number(r.revenue), 0))} unit={t(lang, 'tr đ', 'm VND')} />
+        <KpiTile label={t(lang, 'Hồ sơ hợp nhất', 'Unified profiles')} value={num(rows.length)}
+          meta={t(lang, '+39 tháng này', '+39 this month')} metaTone="u" spark={walk(96, 20, 0.05, 61)} />
+        <KpiTile label={t(lang, 'Tỷ lệ khớp định danh', 'Identity match rate')} value="96.4" unit="%"
+          meta={t(lang, 'AI đề xuất, người duyệt', 'AI-proposed, human-approved')} metaTone="u" />
+        <KpiTile label={t(lang, 'Bản ghi nguồn', 'Source records')} value="214.5K"
+          meta="TOS · Oracle EBS · CRM · AIS · EDI" />
+        <KpiTile label={t(lang, 'Chờ người duyệt', 'Awaiting approval')} value={num(queue.length)}
+          meta={t(lang, 'không tự động hợp nhất', 'no automatic merging')} metaTone="gd" />
+        <KpiTile label={t(lang, 'Share-of-wallet bình quân', 'Average share of wallet')}
+          value={num(avgSow, 0)} unit="%"
+          meta={t(lang, 'còn dư địa bán chéo', 'cross-sell headroom')} metaTone="b" />
       </div>
 
-      <Card title={t(lang, 'Hàng đợi hợp nhất định danh', 'Identity resolution queue')} bodyStyle={{ padding: 12 }}>
-        <div className="grid g2" style={{ gap: 10 }}>
+      <div className="grid g-2-1" style={{ marginBottom: 14 }}>
+        <Card title={`🧩 ${t(lang, 'Hàng đợi hợp nhất định danh', 'Identity merge queue')}`}
+          right={<TierPill tier={2} lang={lang} />} bodyStyle={{ padding: 12 }}>
           {queue.map((q) => (
-            <div key={q.id} style={{ padding: 11, border: '1px solid var(--line)', borderRadius: 10, background: 'var(--surface-2)' }}>
-              <div className="between" style={{ marginBottom: 6 }}>
+            <div key={q.id} style={{ border: '1px solid var(--line)', borderRadius: 'var(--r)', padding: 11, marginBottom: 8 }}>
+              <div className="between">
                 <b style={{ fontSize: 12.5 }}>{q.goldenName}</b>
-                <Tag tone={q.confidence >= 90 ? 'u' : q.confidence >= 80 ? 'gd' : 'd'}>{q.confidence}%</Tag>
+                <Tag tone={q.confidence >= 90 ? 'u' : q.confidence >= 80 ? 'b' : 'gd'}>
+                  AI · {t(lang, 'tin cậy', 'confidence')} {q.confidence}%
+                </Tag>
               </div>
-              <div className="muted num" style={{ marginBottom: 6 }}>{t(lang, 'MST', 'Tax ID')}: {q.taxIdMasked}</div>
-              {records.filter((r) => r.queueId === q.id).map((r) => (
-                <div key={r.id} style={{ fontSize: 11.5, color: 'var(--text-2)', padding: '2px 0' }}>
-                  ↳ {r.sourceRecord}
-                </div>
-              ))}
+              <div className="muted num" style={{ marginTop: 3 }}>{t(lang, 'MST', 'Tax ID')} {q.taxIdMasked}</div>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {records.filter((r) => r.queueId === q.id).length} {t(lang, 'bản ghi', 'records')}:{' '}
+                {records.filter((r) => r.queueId === q.id)
+                  .map((r) => `“${r.sourceRecord}”`).join(' · ')}
+              </div>
+              <div className="flex" style={{ marginTop: 8, alignItems: 'center' }}>
+                <span className="btn xs p">{t(lang, 'Hợp nhất', 'Merge')}</span>
+                <span className="btn xs">{t(lang, 'Tách riêng', 'Keep separate')}</span>
+                <span className="muted" style={{ marginLeft: 'auto' }}>
+                  {t(lang, 'Cần người phê duyệt', 'Requires human approval')}
+                </span>
+              </div>
             </div>
           ))}
-        </div>
-      </Card>
+          <div className="note">
+            {t(lang,
+              'AI không được tự hợp nhất hồ sơ. Hợp nhất sai làm sai lệch hạn mức tín dụng, share-of-wallet và mọi phân tích phía sau — nên bước này chạy ở tầng L2 với phê duyệt bắt buộc của con người.',
+              'AI may not merge profiles on its own. A wrong merge distorts credit limits, share of wallet and every downstream analysis — so this runs at tier L2 with mandatory human approval.')}
+          </div>
+        </Card>
 
-      <div style={{ marginTop: 14 }}>
-        <DataTable
-          id="cdp" lang={lang} basePath={basePath} searchParams={searchParams}
-          title={t(lang, 'Khách hàng hợp nhất', 'Unified customers')} rows={rows} pageSize={14}
-          searchPlaceholder={t(lang, 'Tìm khách hàng…', 'Search customer…')}
-          search={(r) => `${r.memberId} ${r.member}`}
-          filters={[
-            {
-              key: 'seg', label: t(lang, 'Phân khúc', 'Segment'),
-              options: segments.map((s) => [String(s.id), lang === 'vi' ? s.nameVi : s.nameEn]),
-              match: (r, v) => String(r.segmentId) === v,
-            },
-            {
-              key: 'churn', label: t(lang, 'Nguy cơ rời bỏ', 'Churn risk'),
-              options: statusOptions(labels, ['low', 'med', 'high']),
-              match: (r, v) => r.churn === v,
-            },
-          ]}
-          columns={[
-            { key: 'member', header: t(lang, 'Khách hàng', 'Customer'), width: '22%', sortValue: (r) => r.member, render: (r) => <OrgCellLite name={r.member} id={r.memberId} /> },
-            {
-              key: 'seg', header: t(lang, 'Phân khúc', 'Segment'), width: '17%',
-              sortValue: (r) => (lang === 'vi' ? r.segmentVi : r.segmentEn),
-              render: (r) => <span style={{ fontSize: 11.5 }}>{lang === 'vi' ? r.segmentVi : r.segmentEn}</span>,
-            },
-            { key: 'sow', header: t(lang, 'Share of wallet', 'Wallet share'), width: '12%', sortValue: (r) => r.shareOfWallet, render: (r) => <Meter value={r.shareOfWallet} width={62} /> },
-            {
-              key: 'rev', header: t(lang, 'Doanh thu', 'Revenue'), cls: 'r', width: '10%', sortValue: (r) => Number(r.revenue),
-              render: (r) => (
-                <div>
-                  <b className="num">{num(r.revenue)}</b>
-                  <div className="muted">{r.trend > 0 ? '↑' : '↓'}</div>
+        <div className="stack">
+          <Card title={t(lang, 'Phân khúc AI', 'AI segments')} bodyStyle={{ padding: 11 }}>
+            {segmentCounts.map((x, i) => (
+              <div key={x.k} style={{ border: '1px solid var(--line)', borderRadius: 'var(--r)', padding: '8px 10px', marginBottom: 7 }}>
+                <div className="between">
+                  <b style={{ fontSize: 12 }}>{SEGMENT_ICONS[i % 6]} {x.k}</b>
+                  <b className="num" style={{ fontSize: 15 }}>{x.v}</b>
                 </div>
-              ),
-            },
-            {
-              key: 'svc', header: t(lang, 'Dịch vụ đang dùng', 'Services used'), width: '16%',
-              render: (r) => {
-                const s = r.services as Record<string, unknown>
-                return (
-                  <div className="flex wrap" style={{ gap: 3 }}>
-                    {serviceKeys.filter(([k]) => Boolean(s?.[k])).map(([k, vi, en]) => (
-                      <Tag key={k} tone="b">{lang === 'vi' ? vi : en}</Tag>
-                    ))}
-                  </div>
-                )
-              },
-            },
-            {
-              key: 'nba', header: t(lang, 'Hành động kế tiếp', 'Next best action'), width: '15%',
-              sortValue: (r) => (lang === 'vi' ? r.nbaVi : r.nbaEn),
-              render: (r) => <span style={{ fontSize: 11.5 }}>{lang === 'vi' ? r.nbaVi : r.nbaEn}</span>,
-            },
-            {
-              key: 'churn', header: t(lang, 'Rời bỏ', 'Churn'), cls: 'c', width: '8%', sortValue: (r) => r.churn,
-              render: (r) => <Tag tone={tone(labels, r.churn)}>{labels.get(r.churn)?.label ?? r.churn}</Tag>,
-            },
-          ]}
-        />
+                <div className="bar" style={{ marginTop: 5 }}>
+                  <i style={{ width: `${(x.v / segmentCounts[0].v) * 100}%`, background: SEGMENT_COLORS[i % 6] }} />
+                </div>
+              </div>
+            ))}
+          </Card>
+
+          <Card title={t(lang, 'Nguồn dữ liệu', 'Data sources')} bodyStyle={{ padding: 11 }}>
+            {CDP_SOURCES.map(([nVi, nEn, dVi, dEn, mVi, mEn, freshness]) => (
+              <div key={nEn} style={{ padding: '7px 0', borderBottom: '1px dashed var(--line)' }}>
+                <div className="between">
+                  <b style={{ fontSize: 11.5 }}>{t(lang, nVi, nEn)}</b>
+                  <span className="qtag">{t(lang, mVi, mEn)}</span>
+                </div>
+                <div className="muted">{t(lang, dVi, dEn)}</div>
+                <div style={{ marginTop: 4 }}>
+                  <Meter value={freshness} color={freshness > 98 ? 'var(--up)' : 'var(--gold-500)'} width={80} />
+                </div>
+              </div>
+            ))}
+            <div className="note">
+              {t(lang,
+                'Kiến trúc Bronze → Silver → Gold trên lakehouse, mọi tín hiệu có lineage và điểm tin cậy, triển khai on-prem theo yêu cầu bảo vệ dữ liệu.',
+                'Bronze → Silver → Gold lakehouse architecture, every signal carries lineage and a confidence score, deployed on-premises to meet data-protection requirements.')}
+            </div>
+          </Card>
+        </div>
       </div>
+
+      <DataTable
+        id="cdp" lang={lang} basePath={basePath} searchParams={searchParams}
+        title={t(lang, 'Khách hàng hợp nhất — Account 360', 'Unified customers — Account 360')}
+        rows={rows} pageSize={15}
+        searchPlaceholder={t(lang, 'Tìm khách hàng, phân khúc, ngành…', 'Search customer, segment, sector…')}
+        search={(r) => `${r.member} ${r.segmentVi} ${r.segmentEn} ${typeName.get(r.memberType) ?? ''} ${r.sectorVi} ${r.sectorEn}`}
+        filters={[
+          {
+            key: 'seg', label: t(lang, 'Phân khúc', 'Segment'),
+            options: segments.map((s) => [String(s.id), lang === 'vi' ? s.nameVi : s.nameEn]),
+            match: (r, v) => String(r.segmentId) === v,
+          },
+          {
+            key: 'churn', label: t(lang, 'Rủi ro rời bỏ', 'Churn risk'),
+            options: statusOptions(labels, ['low', 'med', 'high']),
+            match: (r, v) => r.churn === v,
+          },
+          {
+            key: 'ty', label: t(lang, 'Loại', 'Type'),
+            options: memberTypeRows.map((x) => [x.code, lang === 'vi' ? x.nameVi : x.nameEn] as [string, string]),
+            match: (r, v) => r.memberType === v,
+          },
+        ]}
+        columns={[
+          {
+            key: 'n', header: t(lang, 'Khách hàng', 'Customer'), width: '21%',
+            sortValue: (r) => r.member,
+            render: (r) => (
+              <div>
+                <OrgCell name={r.member} />
+                <div className="muted" style={{ marginLeft: 36 }}>{lang === 'vi' ? r.sectorVi : r.sectorEn}</div>
+              </div>
+            ),
+          },
+          {
+            key: 'seg', header: t(lang, 'Phân khúc', 'Segment'), width: '15%',
+            sortValue: (r) => r.segmentId,
+            render: (r) => <Tag tone="b">{lang === 'vi' ? r.segmentVi : r.segmentEn}</Tag>,
+          },
+          {
+            key: 'sow', header: t(lang, 'Share of wallet', 'Share of wallet'), width: '12%',
+            sortValue: (r) => r.shareOfWallet,
+            render: (r) => (
+              <Meter value={r.shareOfWallet} width={72}
+                color={r.shareOfWallet > 70 ? 'var(--up)' : r.shareOfWallet > 45 ? 'var(--gold-500)' : 'var(--down)'} />
+            ),
+          },
+          {
+            key: 'rev', header: t(lang, 'Doanh thu 12T', '12M revenue'), cls: 'r', width: '10%',
+            sortValue: (r) => Number(r.revenue),
+            render: (r) => <><b className="num">{num(r.revenue)}</b> {t(lang, 'tỷ', 'bn')}</>,
+          },
+          {
+            key: 'teu', header: 'TEU YTD', cls: 'r', width: '8%',
+            sortValue: (r) => r.teu,
+            render: (r) => <span className="num">{num(r.teu)}</span>,
+          },
+          {
+            key: 'svc', header: t(lang, 'Dịch vụ đang dùng', 'Services used'), cls: 'c', width: '12%',
+            sortValue: (r) => serviceIcons.filter(([k]) => (r.services as Record<string, boolean>)[k]).length,
+            render: (r) => (
+              <span>
+                {serviceIcons.map(([k, icon]) => (
+                  <span key={k} style={{ opacity: (r.services as Record<string, boolean>)[k] ? 1 : 0.2, fontSize: 13 }}>
+                    {icon}{' '}
+                  </span>
+                ))}
+              </span>
+            ),
+          },
+          {
+            key: 'trend', header: t(lang, 'Xu hướng', 'Trend'), cls: 'c', width: '9%',
+            sortValue: (r) => Number(r.trend),
+            render: (r) => (
+              <Sparkline
+                values={walk(10, 14, Number(r.trend) > 0 ? 0.14 : 0.16, r.teu / 100)}
+                width={64} height={20}
+                color={Number(r.trend) > 0 ? 'var(--up)' : 'var(--down)'}
+              />
+            ),
+          },
+          {
+            key: 'churn', header: t(lang, 'Rủi ro rời bỏ', 'Churn risk'), cls: 'c', width: '8%',
+            sortValue: (r) => r.churn,
+            render: (r) => <Tag tone={tone(labels, r.churn)}>{labels.get(r.churn)?.label ?? r.churn}</Tag>,
+          },
+          {
+            key: 'nba', header: t(lang, 'NBA đề xuất', 'Proposed NBA'), width: '11%',
+            sortValue: (r) => (lang === 'vi' ? r.nbaVi : r.nbaEn),
+            render: (r) => (
+              <span style={{ fontSize: 10.5, color: 'var(--brand-600)', fontWeight: 650 }}>
+                {lang === 'vi' ? r.nbaVi : r.nbaEn}
+              </span>
+            ),
+          },
+        ]}
+      />
     </>
   )
 }
@@ -599,12 +734,46 @@ function OrgCellLite({ name, id }: { name: string; id: string }) {
   )
 }
 
-/** cdp_act — Activation & NBA (ui-2.html:4863). */
+/** ui-2.html:4880 — cross-sell reach today. A blank cell is the opportunity. */
+const CROSS_SELL: Array<[string, string, boolean[]]> = [
+  ['Hãng tàu', 'Carriers', [true, false, false, false, false]],
+  ['BCO lớn', 'Large BCOs', [true, true, false, false, false]],
+  ['BCO vừa và nhỏ', 'SME BCOs', [true, false, false, false, false]],
+  ['Forwarder', 'Forwarders', [true, true, true, false, false]],
+  ['Chủ hàng FDI', 'FDI shippers', [true, true, false, false, false]],
+]
+
+const CROSS_SELL_COLS: Array<[string, string]> = [
+  ['Cảng', 'Port'], ['Vận tải bộ', 'Trucking'], ['Kho', 'Warehouse'],
+  ['Chuỗi lạnh', 'Cold chain'], ['Hàng không', 'Air'],
+]
+
+/** ui-2.html:4890 — what the CDP gives the platform, and the one thing it must not become. */
+const CDP_CONTRIBUTION: Array<[string, string, string, string, boolean]> = [
+  ['Kiến trúc định danh dùng lại được', 'Reusable identity architecture',
+    'Thuật toán khớp MST, cây tập đoàn, hàng đợi AI–người duyệt — rút ngắn 2–3 tháng',
+    'Tax-ID matching, corporate tree and the AI-to-human queue — saves 2–3 months', true],
+  ['Nguồn sản lượng mồi hợp pháp', 'A legitimate anchor-volume source',
+    'Gemadept mời khách hàng của chính mình lên nền tảng, có thu thập đồng ý riêng cho mục đích đó',
+    'Gemadept invites its own customers onto the platform, with separate consent for that purpose', true],
+  ['Engine chào giá phía cung', 'A supply-side quoting engine',
+    'AI Agent đề xuất gói dịch vụ theo chuyến đã chạy thật — trở thành trợ lý chào giá trên nền tảng',
+    'The voyage service-basket agent already runs — it becomes the platform’s offering assistant', true],
+  ['Cohort chiến dịch có sẵn', 'Ready-made campaign cohorts',
+    'Phân khúc AI ánh xạ gần như 1:1 vào các phân khúc ưu tiên của chương trình phát triển thị trường',
+    'AI segments map almost 1:1 onto the go-to-market priority segments', true],
+  ['Không phải hệ thống chủ dữ liệu của nền tảng', 'Not the platform’s data master',
+    'Dùng CDP làm danh sách thành viên mặc định sẽ phá vỡ tính trung lập và vi phạm nguyên tắc dữ liệu',
+    'Using the CDP as the default member list would break neutrality and violate the data principles', false],
+]
+
+/** cdp_act — Activation & Next-Best-Action (ui-2.html:4863). */
 export async function CdpActivationPage({ lang, basePath, searchParams }: RoutePageProps) {
   const [rows, nbaActions, labels] = await Promise.all([
     db.select({
       memberId: cdpAccounts.memberId,
       member: members.name,
+      memberType: members.typeCode,
       segmentVi: cdpSegments.nameVi,
       segmentEn: cdpSegments.nameEn,
       nbaId: cdpAccounts.nbaActionId,
@@ -615,6 +784,7 @@ export async function CdpActivationPage({ lang, basePath, searchParams }: RouteP
       churn: cdpAccounts.churnRiskCode,
       confidence: cdpAccounts.confidence,
       trend: cdpAccounts.trend,
+      services: cdpAccounts.services,
     })
       .from(cdpAccounts)
       .innerJoin(members, eq(members.id, cdpAccounts.memberId))
@@ -625,102 +795,202 @@ export async function CdpActivationPage({ lang, basePath, searchParams }: RouteP
     statusLabelMap(lang),
   ])
 
-  const byAction = nbaActions.map((a) => {
-    const g = rows.filter((r) => r.nbaId === a.id)
-    return {
-      id: a.id,
-      label: lang === 'vi' ? a.nameVi : a.nameEn,
-      n: g.length,
-      revenue: g.reduce((x, r) => x + Number(r.revenue), 0),
-      highChurn: g.filter((r) => r.churn === 'high').length,
-      avgSow: g.reduce((x, r) => x + r.shareOfWallet, 0) / (g.length || 1),
-    }
-  })
+  const usesWarehouse = (r: typeof rows[number]) => (r.services as Record<string, boolean>).wh
+
+  /** ui-2.html:4864 — five plays, each sized from the account book. */
+  const plays: Array<[string, string, number, number, Tone]> = [
+    ['Giữ chân sụt sản lượng', 'Retain volume decline',
+      rows.filter((r) => r.churn === 'high').length, 64, 'd'],
+    ['Bán chéo kho & cold-chain cho BCO', 'Cross-sell warehouse & cold to BCOs',
+      rows.filter((r) => !usesWarehouse(r) && r.memberType === 'shipper').length, 38, 'b'],
+    ['Chào tuyến mới cho hãng tàu', 'Offer new lanes to carriers',
+      rows.filter((r) => r.memberType === 'carrier').length, 42, 'u'],
+    ['Điều chỉnh giá theo chỉ số VLX', 'Reprice against the VLX Index',
+      rows.filter((r) => r.shareOfWallet < 50).length, 29, 'gd'],
+    ['Mời lên nền tảng VLX', 'Invite onto the VLX platform',
+      rows.filter((r) => r.shareOfWallet > 60).length, 71, 'v'],
+  ]
+  const accountsInPlay = plays.reduce((a, p) => a + p[2], 0)
+  const avgConversion = plays.reduce((a, p) => a + p[3], 0) / plays.length
+
+  /** ui-2.html:4874 — the rationale shown beside each proposal, in priority order. */
+  const rationale = (r: typeof rows[number]) =>
+    r.churn === 'high'
+      ? t(lang, 'Sản lượng giảm và share-of-wallet dưới 45%', 'Volume declining and share of wallet below 45%')
+      : !usesWarehouse(r)
+        ? t(lang, 'Chưa dùng kho — cơ hội bán chéo rõ', 'Not using warehousing — a clear cross-sell')
+        : r.shareOfWallet < 50
+          ? t(lang, 'Giá đang lệch so với chỉ số tuyến', 'Pricing is off the lane index')
+          : t(lang, 'Khối lượng ổn định, đủ điều kiện mời lên nền tảng',
+            'Stable volume, eligible for platform onboarding')
 
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'CDP 360', 'CDP 360')}
-        title={t(lang, 'Kích hoạt & NBA', 'Activation & NBA')}
+        crumb={t(lang, 'CDP 360 · Thành viên Gemadept', 'CDP 360 · Gemadept member view')}
+        title={t(lang, 'Kích hoạt & Next-Best-Action', 'Activation & Next-Best-Action')}
+        modules={['F15']}
         sub={t(lang,
-          'Hành động kế tiếp được đề xuất cho từng khách hàng dựa trên share of wallet, xu hướng sản lượng và nguy cơ rời bỏ. Đề xuất là gợi ý, không tự thực thi.',
-          'A next-best action proposed per customer from wallet share, volume trend and churn risk. Proposals are advisory and never execute themselves.')}
+          'AI đề xuất — con người quyết định. Lọc, chọn nhiều và duyệt hàng loạt. Mọi tín hiệu có lineage, điểm tin cậy và phân quyền; mọi hành động có người phê duyệt.',
+          'AI advises — humans decide. Filter, multi-select and bulk-approve. Every signal carries lineage, a confidence score and access control; every action has an approver.')}
+        actions={
+          <>
+            <span className="btn">{t(lang, 'Bỏ qua', 'Dismiss')}</span>
+            <span className="btn p">✓ {t(lang, 'Duyệt hàng loạt', 'Bulk approve')}</span>
+          </>
+        }
       />
 
-      <div className="grid g4" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Khách hàng có đề xuất', 'Customers with an action')} value={num(rows.length)} />
-        <KpiTile label={t(lang, 'Loại hành động', 'Action types')} value={num(nbaActions.length)} />
-        <KpiTile label={t(lang, 'Ưu tiên giữ chân', 'Retention priority')}
-          value={num(rows.filter((r) => r.churn === 'high').length)} metaTone="d"
-          meta={t(lang, 'nguy cơ rời bỏ cao', 'high churn risk')} />
-        <KpiTile label={t(lang, 'Doanh thu liên quan', 'Revenue in scope')}
-          value={num(rows.reduce((a, r) => a + Number(r.revenue), 0))} unit={t(lang, 'tr đ', 'm VND')} />
+      <BoundaryNote lang={lang}>
+        {t(lang,
+          'Toàn bộ dữ liệu trên màn hình này thuộc phạm vi thành viên Gemadept: chỉ các giao dịch giữa Gemadept và khách hàng của Gemadept. CDP không phải hệ thống chủ dữ liệu khách hàng của nền tảng và không thấy dữ liệu của hãng tàu hay ngân hàng khác. Dùng dữ liệu này cho tiếp thị cần sự đồng ý riêng của từng khách hàng.',
+          'Everything on this screen is within Gemadept’s member scope: only transactions between Gemadept and Gemadept’s own customers. The CDP is not the platform’s customer master and cannot see other carriers’ or banks’ data. Using this data for marketing requires each customer’s separate consent.')}
+      </BoundaryNote>
+
+      <div className="grid g5" style={{ margin: '14px 0' }}>
+        <KpiTile label={t(lang, 'Play đang chạy', 'Plays running')} value={num(plays.length)}
+          meta={t(lang, 'AI đề xuất, người duyệt', 'AI-proposed, human-approved')} metaTone="v" />
+        <KpiTile label={t(lang, 'Tài khoản trong play', 'Accounts in play')} value={num(accountsInPlay)}
+          meta={t(lang, 'có thể trùng nhiều play', 'may overlap across plays')} />
+        <KpiTile label={t(lang, 'Tỷ lệ chuyển đổi TB', 'Average conversion')}
+          value={num(avgConversion, 0)} unit="%" meta="+14 pp YoY" metaTone="u" />
+        <KpiTile label={t(lang, 'Doanh thu rủi ro đã nhận diện', 'Revenue at risk identified')}
+          value="128" unit={t(lang, 'tỷ đ', 'bn VND')}
+          meta={t(lang, '9 tài khoản lớn', '9 major accounts')} metaTone="d" />
+        <KpiTile label={t(lang, 'Khách đã mời lên nền tảng', 'Invited onto the platform')} value="86"
+          meta={t(lang, '62 đã hoàn tất KYB', '62 completed KYB')} metaTone="u" />
       </div>
 
-      <Card title={t(lang, 'Theo loại hành động', 'By action type')} bodyStyle={{ padding: 0 }}>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>{t(lang, 'Hành động kế tiếp', 'Next best action')}</th>
-              <th className="r">{t(lang, 'Khách hàng', 'Customers')}</th>
-              <th className="r">{t(lang, 'Rủi ro cao', 'High risk')}</th>
-              <th>{t(lang, 'Share of wallet TB', 'Avg wallet share')}</th>
-              <th className="r">{t(lang, 'Doanh thu', 'Revenue')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {byAction.map((a) => (
-              <tr key={a.id}>
-                <td><b style={{ fontSize: 12 }}>{a.label}</b></td>
-                <td className="r num">{num(a.n)}</td>
-                <td className="r num">{a.highChurn > 0 ? <span style={{ color: 'var(--down)' }}>{num(a.highChurn)}</span> : '—'}</td>
-                <td><Meter value={a.avgSow} width={100} /></td>
-                <td className="r num"><b>{num(a.revenue)}</b></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <Card title={`📣 ${t(lang, 'Play đang chạy', 'Running plays')}`} >
+        <div className="grid g5">
+          {plays.map(([vi, en, accounts, conversion]) => {
+            const color = conversion >= 50 ? 'var(--up)' : 'var(--gold-500)'
+            return (
+              <div key={vi} style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-lg)', padding: 13 }}>
+                <b style={{ fontSize: 12.5 }}>{t(lang, vi, en)}</b>
+                <div className="flex" style={{ gap: 6, margin: '7px 0' }}>
+                  <b className="num" style={{ fontSize: 20 }}>{accounts}</b>
+                  <span className="muted">{t(lang, 'tài khoản', 'accounts')}</span>
+                </div>
+                <div className="between">
+                  <span className="muted">{t(lang, 'Chuyển đổi', 'Conversion')}</span>
+                  <b className="num" style={{ color }}>{conversion}%</b>
+                </div>
+                <div className="bar" style={{ marginTop: 5 }}>
+                  <i style={{ width: `${conversion}%`, background: color }} />
+                </div>
+                <span className="btn xs blk" style={{ marginTop: 9 }}>
+                  {t(lang, 'Xem danh sách', 'View list')}
+                </span>
+              </div>
+            )
+          })}
+        </div>
       </Card>
 
-      <div style={{ marginTop: 14 }}>
+      <div className="grid g-3-2" style={{ marginTop: 14 }}>
         <DataTable
           id="nba" lang={lang} basePath={basePath} searchParams={searchParams}
-          title={t(lang, 'Danh sách kích hoạt', 'Activation list')} rows={rows} pageSize={14}
-          searchPlaceholder={t(lang, 'Tìm khách hàng…', 'Search customer…')}
-          search={(r) => `${r.memberId} ${r.member}`}
+          title={t(lang, 'Hàng đợi Next-Best-Action', 'Next-Best-Action queue')}
+          rows={rows} pageSize={14}
+          searchPlaceholder={t(lang, 'Tìm khách hàng, hành động…', 'Search customer, action…')}
+          search={(r) => `${r.member} ${r.nbaVi} ${r.nbaEn} ${r.segmentVi}`}
           filters={[
             {
-              key: 'nba', label: t(lang, 'Hành động', 'Action'),
+              key: 'nba', label: t(lang, 'Loại hành động', 'Action type'),
               options: nbaActions.map((a) => [String(a.id), lang === 'vi' ? a.nameVi : a.nameEn]),
               match: (r, v) => String(r.nbaId) === v,
             },
             {
-              key: 'churn', label: t(lang, 'Nguy cơ', 'Risk'),
-              options: statusOptions(labels, ['low', 'med', 'high']),
+              key: 'churn', label: t(lang, 'Rủi ro rời bỏ', 'Churn risk'),
+              options: statusOptions(labels, ['high', 'med', 'low']),
               match: (r, v) => r.churn === v,
             },
           ]}
           columns={[
-            { key: 'member', header: t(lang, 'Khách hàng', 'Customer'), width: '24%', sortValue: (r) => r.member, render: (r) => <OrgCellLite name={r.member} id={r.memberId} /> },
             {
-              key: 'seg', header: t(lang, 'Phân khúc', 'Segment'), width: '18%',
-              sortValue: (r) => (lang === 'vi' ? r.segmentVi : r.segmentEn),
-              render: (r) => <span style={{ fontSize: 11.5 }}>{lang === 'vi' ? r.segmentVi : r.segmentEn}</span>,
+              key: 'n', header: t(lang, 'Khách hàng', 'Customer'), width: '24%',
+              sortValue: (r) => r.member,
+              render: (r) => <OrgCell name={r.member} />,
             },
             {
-              key: 'nba', header: t(lang, 'Hành động kế tiếp', 'Next best action'), width: '22%',
-              sortValue: (r) => (lang === 'vi' ? r.nbaVi : r.nbaEn),
-              render: (r) => <b style={{ fontSize: 11.5 }}>{lang === 'vi' ? r.nbaVi : r.nbaEn}</b>,
+              key: 'nba', header: t(lang, 'Hành động đề xuất', 'Proposed action'), width: '22%',
+              sortValue: (r) => r.nbaId,
+              render: (r) => (
+                <b style={{ fontSize: 12, color: 'var(--brand-600)' }}>{lang === 'vi' ? r.nbaVi : r.nbaEn}</b>
+              ),
             },
-            { key: 'sow', header: t(lang, 'Share of wallet', 'Wallet share'), width: '13%', sortValue: (r) => r.shareOfWallet, render: (r) => <Meter value={r.shareOfWallet} width={64} /> },
-            { key: 'rev', header: t(lang, 'Doanh thu', 'Revenue'), cls: 'r', width: '10%', sortValue: (r) => Number(r.revenue), render: (r) => <b className="num">{num(r.revenue)}</b> },
-            { key: 'conf', header: t(lang, 'Tin cậy', 'Confidence'), cls: 'r', width: '8%', sortValue: (r) => r.confidence, render: (r) => <span className="num">{r.confidence}%</span> },
             {
-              key: 'churn', header: t(lang, 'Nguy cơ', 'Risk'), cls: 'c', width: '9%', sortValue: (r) => r.churn,
+              key: 'why', header: t(lang, 'Vì sao', 'Rationale'), width: '24%',
+              render: (r) => <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{rationale(r)}</span>,
+            },
+            {
+              key: 'conf', header: t(lang, 'Độ tin cậy', 'Confidence'), width: '12%',
+              sortValue: (r) => r.confidence,
+              render: (r) => (
+                <Meter value={r.confidence} width={48}
+                  color={r.confidence >= 85 ? 'var(--up)' : 'var(--gold-500)'} />
+              ),
+            },
+            {
+              key: 'churn', header: t(lang, 'Rủi ro', 'Risk'), cls: 'c', width: '10%',
+              sortValue: (r) => r.churn,
               render: (r) => <Tag tone={tone(labels, r.churn)}>{labels.get(r.churn)?.label ?? r.churn}</Tag>,
+            },
+            {
+              key: 'act', header: '', cls: 'r', width: '8%',
+              render: () => <span className="btn xs p">{t(lang, 'Duyệt', 'Approve')}</span>,
             },
           ]}
         />
+
+        <div className="stack">
+          <Card title={t(lang, 'Ma trận bán chéo', 'Cross-sell matrix')}
+            right={<span className="sub">{t(lang, 'Ô trống = cơ hội', 'Blank = opportunity')}</span>}
+            bodyStyle={{ padding: 0 }}>
+            <div className="tbl-wrap" style={{ maxHeight: 'none' }}>
+              <table className="tbl mtx">
+                <thead>
+                  <tr>
+                    <th>{t(lang, 'Nhóm', 'Group')}</th>
+                    {CROSS_SELL_COLS.map(([cVi, cEn]) => (
+                      <th key={cEn} className="c">{t(lang, cVi, cEn)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {CROSS_SELL.map(([gVi, gEn, cells]) => (
+                    <tr key={gEn}>
+                      <td style={{ fontSize: 11.5 }}>{t(lang, gVi, gEn)}</td>
+                      {cells.map((yes, i) => (
+                        <td key={i} className="c">
+                          <span className={`yn ${yes ? 'y' : 'n'}`}>{yes ? '✓' : '✕'}</span>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="note">
+              {t(lang,
+                'Ưu tiên rõ nhất: kho và cold-chain cho BCO lớn. Đây cũng là dịch vụ Gemadept có năng lực dư và là lý do mạnh để đưa nhóm khách này lên nền tảng.',
+                'The clearest priority: warehousing and cold chain for large BCOs. It is also where Gemadept has spare capacity, and a strong reason to bring these customers onto the platform.')}
+            </div>
+          </Card>
+
+          <Card title={t(lang, 'CDP đóng góp gì cho nền tảng', 'What the CDP contributes')}
+            bodyStyle={{ padding: 11 }}>
+            {CDP_CONTRIBUTION.map(([vi, en, dVi, dEn, positive]) => (
+              <div key={en} style={{ padding: '8px 0', borderBottom: '1px dashed var(--line)' }}>
+                <b style={{ fontSize: 11.5, color: positive ? 'var(--up)' : 'var(--down)' }}>
+                  {positive ? '✓ ' : '✕ '}{t(lang, vi, en)}
+                </b>
+                <div className="muted" style={{ marginTop: 2 }}>{t(lang, dVi, dEn)}</div>
+              </div>
+            ))}
+          </Card>
+        </div>
       </div>
     </>
   )

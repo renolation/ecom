@@ -1,7 +1,8 @@
+import Link from 'next/link'
 import { asc, eq, sql } from 'drizzle-orm'
-import { BarChart, LineChart } from '@/components/charts'
+import { BarChart, Donut, LineChart, Sparkline, walk } from '@/components/charts'
 import { DataTable } from '@/components/table/data-table'
-import { Card, KpiTile, Meter, PageHeader, Tag } from '@/components/ui'
+import { Card, KpiTile, Legend, Meter, PageHeader, Tag } from '@/components/ui'
 import { tableHref } from '@/components/table/table-types'
 import {
   RateHeatmap, RepriceModal, cellPasses,
@@ -9,7 +10,7 @@ import {
 } from './carrier-heatmap'
 import { db } from '@/lib/db'
 import {
-  bids, carriers, lanes, members, ports, rateCards, rfqs, rfqScopes, voyages,
+  bids, carriers, cdpAccounts, lanes, members, ports, rateCards, rfqs, rfqScopes, voyages,
 } from '@/db/schema'
 import { num, pct, t, usd, type Lang } from '@/lib/i18n'
 import {
@@ -21,104 +22,228 @@ import type { RoutePageProps } from './page-props'
 const tone = (labels: Map<string, { label: string; tone: string }>, code: string): Tone =>
   (labels.get(code)?.tone ?? 'n') as Tone
 
-/** c_dash — Carrier dashboard (ui-2.html:2284). */
+/** ui-2.html:2296 — where the slots were sold. Fixed shares in the prototype. */
+const CHANNEL_MIX: Array<[string, string, number, string]> = [
+  ['Đấu thầu / hợp đồng khung', 'Tender / framework', 44, 'var(--brand-500)'],
+  ['Spot trên nền tảng', 'On-platform spot', 34, 'var(--violet)'],
+  ['Trợ lý chào giá AI', 'AI offering assistant', 13, 'var(--gold-500)'],
+  ['Ngoài nền tảng', 'Off-platform', 9, 'var(--text-3)'],
+]
+
+/** ui-2.html:2304 — the four things a provider should act on today. */
+const CARRIER_ACTIONS: Array<[string, string, string, string, Tone, string]> = [
+  ['5 gói thầu chờ chào giá', '5 tenders awaiting bid',
+    '1 gói đóng sau 4 giờ', '1 closes in 4 hours', 'd', 'c_bids'],
+  ['12 tuyến-tuần lấp đầy dưới 70%', '12 lane-weeks below 70% fill',
+    'Trợ lý định giá đã có khuyến nghị', 'The pricing assistant has recommendations', 'gd', 'c_inv'],
+  ['3 chuyến sắp cập cảng chưa có giỏ dịch vụ', '3 arriving voyages without a service basket',
+    'Chạy trợ lý chào giá theo chuyến', 'Run the voyage offering assistant', 'b', 'c_offer'],
+  ['11,4 tỷ chờ đối soát', '11.4bn awaiting reconciliation',
+    '18 booking đã giao, chưa xuất hoá đơn', '18 delivered bookings not yet invoiced', 'b', 'c_settle'],
+]
+
+/** c_dash — Provider dashboard (ui-2.html:2284). */
 export async function CarrierDashboardPage({ lang }: RoutePageProps) {
-  const [byLane, byWeek, byEquipment, statusSplit] = await Promise.all([
+  const [byLane, topAccounts, labels] = await Promise.all([
     db.select({
       lane: rateCards.laneCode,
+      corridorId: lanes.corridorId,
+      origin: ports.name,
+      transit: lanes.transitDays,
+      laneIndex: lanes.indexPrice,
       capacity: sql<number>`sum(${rateCards.capacity})::int`,
       sold: sql<number>`sum(${rateCards.sold})::int`,
-      revenue: sql<number>`sum(${rateCards.sold} * ${rateCards.currentPrice})::numeric`,
-    }).from(rateCards).groupBy(rateCards.laneCode).orderBy(asc(rateCards.laneCode)),
+      avgPrice: sql<number>`avg(${rateCards.currentPrice})::numeric`,
+    })
+      .from(rateCards)
+      .innerJoin(lanes, eq(lanes.code, rateCards.laneCode))
+      .innerJoin(ports, eq(ports.code, lanes.originPortCode))
+      .groupBy(rateCards.laneCode, lanes.corridorId, ports.name, lanes.transitDays, lanes.indexPrice, lanes.ord)
+      .orderBy(asc(lanes.ord)),
     db.select({
-      week: rateCards.week,
-      weekIndex: rateCards.weekIndex,
-      fill: sql<number>`avg(${rateCards.fillPct})::numeric`,
-    }).from(rateCards).groupBy(rateCards.week, rateCards.weekIndex).orderBy(asc(rateCards.weekIndex)),
-    db.select({
-      equipment: rateCards.equipmentCode,
-      sold: sql<number>`sum(${rateCards.sold})::int`,
-    }).from(rateCards).groupBy(rateCards.equipmentCode),
-    db.select({
-      status: voyages.statusCode,
-      n: sql<number>`count(*)::int`,
-    }).from(voyages).groupBy(voyages.statusCode),
+      member: members.name,
+      teu: members.teu,
+      revenue: cdpAccounts.revenue,
+      trend: cdpAccounts.trend,
+      churn: cdpAccounts.churnRiskCode,
+    })
+      .from(cdpAccounts)
+      .innerJoin(members, eq(members.id, cdpAccounts.memberId))
+      .where(eq(members.typeCode, 'shipper'))
+      .orderBy(asc(cdpAccounts.memberId))
+      .limit(12),
+    statusLabelMap(lang),
   ])
 
-  const labels = await statusLabelMap(lang)
   const totalCap = byLane.reduce((a, r) => a + r.capacity, 0)
   const totalSold = byLane.reduce((a, r) => a + r.sold, 0)
-  const totalRevenue = byLane.reduce((a, r) => a + Number(r.revenue), 0)
-  const won = statusSplit.find((s) => s.status === 'won')?.n ?? 0
-  const quoted = statusSplit.reduce((a, s) => a + s.n, 0)
 
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'Hãng tàu · Bắt đầu', 'Carrier · Start here')}
-        title={t(lang, 'Bảng điều khiển', 'Dashboard')}
+        crumb={t(lang, 'Hãng tàu · Tổng quan', 'Carrier · Overview')}
+        title={t(lang, 'Bảng điều khiển nhà cung cấp', 'Provider dashboard')}
         sub={t(lang,
-          'Năng lực, mức lấp đầy và doanh thu theo tuyến và theo tuần khai thác.',
-          'Capacity, fill rate and revenue by lane and by operating week.')}
+          'Hiệu suất bán chỗ, lấp đầy và doanh thu qua nền tảng. Nguồn đơn hàng đã xác minh, chi phí bán hàng thấp hơn và thanh toán nhanh hơn.',
+          'Slot sales, utilisation and platform revenue. Verified demand, lower cost of sale and faster payment.')}
       />
 
       <div className="grid g5" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Năng lực niêm yết', 'Listed capacity')} value={num(totalCap)} unit="TEU" />
-        <KpiTile label={t(lang, 'Đã bán', 'Sold')} value={num(totalSold)} unit="TEU"
-          bar={(totalSold / totalCap) * 100} />
-        <KpiTile label={t(lang, 'Lấp đầy', 'Fill rate')} value={num((totalSold / totalCap) * 100, 1)} unit="%" />
-        <KpiTile label={t(lang, 'Doanh thu niêm yết', 'Listed revenue')} value={usd(totalRevenue)} />
-        <KpiTile label={t(lang, 'Tỷ lệ thắng chào giá', 'Offer win rate')}
-          value={num((won / (quoted || 1)) * 100, 1)} unit="%"
-          meta={t(lang, `${num(won)} chuyến đã chốt`, `${num(won)} voyages won`)} metaTone="u" />
+        <KpiTile label={t(lang, 'Doanh thu qua nền tảng', 'Revenue via platform')} value="104.2"
+          unit={t(lang, 'tỷ đ', 'bn VND')} meta="+22,4% MoM" metaTone="u" spark={walk(80, 20, 0.06, 4)} />
+        <KpiTile label={t(lang, 'Tỷ lệ lấp đầy', 'Slot utilisation')} value="87.4" unit="%"
+          meta="+6,1 pp" metaTone="u" spark={walk(80, 20, 0.03, 9)} sparkColor="var(--up)" />
+        <KpiTile label={t(lang, 'Chỗ đã bán', 'Slots sold')} value={num(totalSold)} unit="TEU"
+          meta={t(lang, `trên ${num(totalCap)} chào bán`, `of ${num(totalCap)} offered`)} />
+        <KpiTile label={t(lang, 'Tỷ lệ thắng thầu', 'Bid win rate')} value="34" unit="%"
+          meta={t(lang, 'trung bình sàn 26%', 'platform avg 26%')} metaTone="u" />
+        <KpiTile label={t(lang, 'Kỳ thu tiền (DSO)', 'Days sales outstanding')} value="11.4"
+          unit={t(lang, 'ngày', 'days')}
+          meta={t(lang, 'trước đây 46 ngày', 'was 46 days')} metaTone="u"
+          spark={walk(40, 20, -0.02, 17)} />
       </div>
 
       <div className="grid g-2-1" style={{ marginBottom: 14 }}>
-        <Card title={t(lang, 'Mức lấp đầy theo tuần', 'Fill rate by week')}>
-          <LineChart
-            series={[{ data: byWeek.map((w) => Number(w.fill)), color: 'var(--brand-500)', fill: true }]}
-            labels={byWeek.map((w) => w.week)}
-            fmt={(v) => `${Math.round(v)}%`}
-            height={230}
-          />
+        <Card title={t(lang, 'Doanh thu & lấp đầy theo tuyến', 'Revenue & utilisation by lane')}
+          bodyStyle={{ padding: 0 }}>
+          <div className="tbl-wrap" style={{ maxHeight: 'none' }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t(lang, 'Tuyến', 'Lane')}</th>
+                  <th className="c">{t(lang, 'Hành lang', 'Corridor')}</th>
+                  <th className="r">{t(lang, 'Sức chở', 'Capacity')}</th>
+                  <th className="r">{t(lang, 'Đã bán', 'Sold')}</th>
+                  <th style={{ width: 130 }}>{t(lang, 'Lấp đầy', 'Fill')}</th>
+                  <th className="r">{t(lang, 'Giá TB', 'Avg rate')}</th>
+                  <th className="r">{t(lang, 'So chỉ số', 'vs index')}</th>
+                  <th className="r">{t(lang, 'Doanh thu', 'Revenue')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byLane.map((l) => {
+                  const avg = Math.round(Number(l.avgPrice))
+                  const fill = Math.round((l.sold / l.capacity) * 100)
+                  const dev = ((avg - Number(l.laneIndex)) / Number(l.laneIndex)) * 100
+                  // USD slot revenue converted at the prototype's 26,500 VND rate, shown in bn.
+                  const revenueBn = Math.round((l.sold * avg * 26500) / 1e9 * 10) / 10
+                  return (
+                    <tr key={l.lane}>
+                      <td>
+                        <b>{l.lane}</b>
+                        <div className="muted">{l.origin} · {l.transit} {t(lang, 'ngày', 'd')}</div>
+                      </td>
+                      <td className="c"><Tag tone="n">{String(l.corridorId).padStart(2, '0')}</Tag></td>
+                      <td className="r num">{num(l.capacity)}</td>
+                      <td className="r num">{num(l.sold)}</td>
+                      <td>
+                        <Meter value={fill} width={66}
+                          color={fill > 90 ? 'var(--up)' : fill > 75 ? 'var(--brand-500)' : 'var(--gold-500)'} />
+                      </td>
+                      <td className="r num">{usd(avg)}</td>
+                      <td className="r"><Tag tone={dev > 0 ? 'u' : 'd'}>{pct(dev)}</Tag></td>
+                      <td className="r num" style={{ fontWeight: 700 }}>
+                        {num(revenueBn, 1)} {t(lang, 'tỷ', 'bn')}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </Card>
-        <Card title={t(lang, 'Đã bán theo thiết bị', 'Sold by equipment')}>
-          <BarChart
-            items={byEquipment.map((e, i) => ({
-              l: e.equipment.replace(/ .*/, ''),
-              v: e.sold,
-              c: ['var(--brand-500)', 'var(--brand-400)', 'var(--violet)', 'var(--gold-500)'][i % 4],
-            }))}
-            height={230}
-            valueLabel={(v) => num(v)}
-          />
-        </Card>
+
+        <div className="stack">
+          <Card title={t(lang, 'Kênh bán', 'Sales channel mix')}>
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <Donut items={CHANNEL_MIX.map(([, , v, c]) => ({ v, c }))} size={148} thickness={22} />
+            </div>
+            <div style={{ marginTop: 11, fontSize: 12 }}>
+              {CHANNEL_MIX.map(([vi, en, v, c]) => (
+                <div key={en} className="between" style={{ padding: '3px 0' }}>
+                  <span>
+                    <i style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 3, background: c, marginRight: 6 }} />
+                    {t(lang, vi, en)}
+                  </span>
+                  <b className="num">{v}%</b>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card title={t(lang, 'Việc cần làm', 'Action queue')} bodyStyle={{ padding: 10 }}>
+            {CARRIER_ACTIONS.map(([vi, en, dVi, dEn, toneCode, route]) => (
+              <Link key={en} href={`/r/${route}`} className="cq-row">
+                <Tag tone={toneCode}>●</Tag>
+                <div style={{ flex: 1 }}>
+                  <b style={{ fontSize: 12 }}>{t(lang, vi, en)}</b>
+                  <div className="muted">{t(lang, dVi, dEn)}</div>
+                </div>
+                <span className="muted">→</span>
+              </Link>
+            ))}
+          </Card>
+        </div>
       </div>
 
-      <Card title={t(lang, 'Hiệu quả theo tuyến', 'Performance by lane')}>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>{t(lang, 'Tuyến', 'Lane')}</th>
-              <th className="r">{t(lang, 'Năng lực', 'Capacity')}</th>
-              <th className="r">{t(lang, 'Đã bán', 'Sold')}</th>
-              <th>{t(lang, 'Lấp đầy', 'Fill')}</th>
-              <th className="r">{t(lang, 'Doanh thu', 'Revenue')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {byLane.map((r) => (
-              <tr key={r.lane}>
-                <td><b style={{ fontSize: 12 }}>{r.lane}</b></td>
-                <td className="r num">{num(r.capacity)}</td>
-                <td className="r num">{num(r.sold)}</td>
-                <td><Meter value={(r.sold / r.capacity) * 100} width={80} /></td>
-                <td className="r num"><b>{usd(r.revenue)}</b></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      <div className="grid g2">
+        <Card title={t(lang, 'Giá của tôi so với thị trường', 'My rate versus the market')}
+          right={<span className="sub">CMT-SIN · 40HC</span>}>
+          <LineChart
+            series={[
+              { data: walk(720, 50, 0.02, 13), color: 'var(--violet)' },
+              { data: walk(742, 50, 0.016, 21), color: 'var(--gold-500)', dash: true, dot: false },
+              { data: walk(690, 50, 0.024, 31), color: 'var(--text-3)', dot: false },
+            ]}
+            height={200}
+            labels={['W28', 'W30', 'W32', 'W34', 'W36']}
+            fmt={(v) => usd(Math.round(v))}
+          />
+          <Legend items={[
+            { color: 'var(--violet)', label: t(lang, 'Giá của tôi', 'My rate') },
+            { color: 'var(--gold-500)', label: t(lang, 'Chỉ số VLX', 'VLX Index') },
+            { color: 'var(--text-3)', label: t(lang, 'Giá thấp nhất tuyến', 'Lowest on lane') },
+          ]} />
+        </Card>
+
+        <Card title={t(lang, 'Khách hàng hàng đầu trên nền tảng', 'Top counterparties on the platform')}
+          bodyStyle={{ padding: 0 }}>
+          <div className="tbl-wrap" style={{ maxHeight: 340 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t(lang, 'Chủ hàng', 'Shipper')}</th>
+                  <th className="r">TEU YTD</th>
+                  <th className="r">{t(lang, 'Doanh thu', 'Revenue')}</th>
+                  <th className="c">{t(lang, 'Xu hướng', 'Trend')}</th>
+                  <th className="c">{t(lang, 'Rủi ro', 'Risk')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topAccounts.map((a) => (
+                  <tr key={a.member}>
+                    <td><b style={{ fontSize: 12 }}>{a.member}</b></td>
+                    <td className="r num">{num(a.teu)}</td>
+                    <td className="r num">{num(a.revenue)} {t(lang, 'tỷ', 'bn')}</td>
+                    <td className="c">
+                      <Sparkline
+                        values={walk(10, 14, Number(a.trend) > 0 ? 0.14 : 0.16, a.teu / 100)}
+                        width={68} height={22}
+                        color={Number(a.trend) > 0 ? 'var(--up)' : 'var(--down)'}
+                      />
+                    </td>
+                    <td className="c">
+                      <Tag tone={(labels.get(a.churn)?.tone ?? 'n') as Tone}>
+                        {labels.get(a.churn)?.label ?? a.churn}
+                      </Tag>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
     </>
   )
 }

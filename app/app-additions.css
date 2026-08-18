@@ -174,3 +174,7 @@
   .fp-row{grid-template-columns:42px 1fr;row-gap:8px}
   .fp-journey{grid-template-columns:repeat(2,1fr)}
 }
+
+/* c_dash — action queue rows (ui-2.html:2309). */
+.cq-row{display:flex;gap:9px;padding:9px;border-radius:9px;background:var(--surface-2);margin-bottom:7px;align-items:flex-start;text-decoration:none;color:inherit;transition:.13s}
+.cq-row:hover{background:var(--surface-3)}
