@@ -184,6 +184,7 @@ export async function MarketPage({ lang, basePath, searchParams }: RoutePageProp
   const ran = one(sp, 'mk.run', '') === '1'
   const sortBy = one(sp, 'mk.sort', 'sc')
 
+  const openId = openModalId(sp)
   const rows = await loadOffers()
 
   const origins = [...new Set(rows.map((r) => r.origin))]
@@ -249,6 +250,33 @@ export async function MarketPage({ lang, basePath, searchParams }: RoutePageProp
         services={services}
         labels={labels}
       />
+    {openId === 'weights' ? (
+      <Modal
+        title={t(lang, 'Trọng số ghép lệnh', 'Matching weights')}
+        icon="⚖️"
+        basePath={basePath}
+        searchParams={sp}
+        closeLabel={t(lang, 'Đóng', 'Close')}
+      >
+        <div className="modal-b">
+          <ModalPanel title={t(lang, 'Bảy tiêu chí xếp hạng', 'Seven ranking criteria')}>
+            {([
+              [t(lang, 'Giá so với khoảng giá tuyến', 'Price within lane range'), 25],
+              [t(lang, 'Độ tin cậy đúng lịch', 'Schedule reliability'), 20],
+              [t(lang, 'Sức chứa còn lại so với nhu cầu', 'Capacity vs requirement'), 15],
+              [t(lang, 'Tàu thẳng', 'Direct sailing'), 10],
+              [t(lang, 'Phù hợp loại hàng', 'Commodity fit'), 10],
+              [t(lang, 'Cường độ phát thải CO₂', 'CO₂ intensity'), 10],
+              [t(lang, 'Đánh giá nhà cung cấp', 'Provider rating'), 10],
+            ] as Array<[string, number]>).map(([label, weight], i, all) => (
+              <ModalRow key={label} term={label} last={i === all.length - 1}>
+                <b className="num">{weight}</b> <span className="muted">/ 100</span>
+              </ModalRow>
+            ))}
+          </ModalPanel>
+        </div>
+      </Modal>
+    ) : null}
     </>
   )
 
@@ -460,7 +488,6 @@ export async function MarketPage({ lang, basePath, searchParams }: RoutePageProp
   }
   const list = hits.slice().sort(sorters[sortBy] ?? sorters.sc)
 
-  const openId = openModalId(sp)
   const opened = openId === 'weights' ? null : list.find((w) => String(w.o.id) === openId)
 
   const eta = (o: OfferRow) => {
@@ -468,6 +495,8 @@ export async function MarketPage({ lang, basePath, searchParams }: RoutePageProp
     d.setUTCDate(d.getUTCDate() + o.transit)
     return d.toISOString().slice(0, 10)
   }
+  /** ui-2.html:662 — the rate cards show `dd/MM`; the table keeps full ISO dates. */
+  const short = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 
   return (
     <>
@@ -543,7 +572,7 @@ export async function MarketPage({ lang, basePath, searchParams }: RoutePageProp
                 <div className="flex" style={{ gap: 12 }}>
                   <div>
                     <div className="muted">ETD</div>
-                    <b className="num">{o.departOn}</b>
+                    <b className="num">{short(o.departOn)}</b>
                     <div className="muted">{t(lang, 'cắt máng', 'cut-off')} -{o.cutoffDays}d</div>
                   </div>
                   <div style={{ flex: 1, textAlign: 'center', minWidth: 110 }}>
@@ -561,7 +590,7 @@ export async function MarketPage({ lang, basePath, searchParams }: RoutePageProp
                   </div>
                   <div>
                     <div className="muted">ETA</div>
-                    <b className="num">{eta(o)}</b>
+                    <b className="num">{short(eta(o))}</b>
                     {mk.arriveBy
                       ? <div><Tag tone={late ? 'd' : 'u'}>{late
                         ? t(lang, 'trễ hạn', 'after cut')
@@ -712,34 +741,6 @@ export async function MarketPage({ lang, basePath, searchParams }: RoutePageProp
           },
         ]}
       />
-
-      {openId === 'weights' ? (
-        <Modal
-          title={t(lang, 'Trọng số ghép lệnh', 'Matching weights')}
-          icon="⚖️"
-          basePath={basePath}
-          searchParams={sp}
-          closeLabel={t(lang, 'Đóng', 'Close')}
-        >
-          <div className="modal-b">
-            <ModalPanel title={t(lang, 'Bảy tiêu chí xếp hạng', 'Seven ranking criteria')}>
-              {([
-                [t(lang, 'Giá so với khoảng giá tuyến', 'Price within lane range'), 25],
-                [t(lang, 'Độ tin cậy đúng lịch', 'Schedule reliability'), 20],
-                [t(lang, 'Sức chứa còn lại so với nhu cầu', 'Capacity vs requirement'), 15],
-                [t(lang, 'Tàu thẳng', 'Direct sailing'), 10],
-                [t(lang, 'Phù hợp loại hàng', 'Commodity fit'), 10],
-                [t(lang, 'Cường độ phát thải CO₂', 'CO₂ intensity'), 10],
-                [t(lang, 'Đánh giá nhà cung cấp', 'Provider rating'), 10],
-              ] as Array<[string, number]>).map(([label, weight], i, all) => (
-                <ModalRow key={label} term={label} last={i === all.length - 1}>
-                  <b className="num">{weight}</b> <span className="muted">/ 100</span>
-                </ModalRow>
-              ))}
-            </ModalPanel>
-          </div>
-        </Modal>
-      ) : null}
 
       {opened ? (
         <Modal

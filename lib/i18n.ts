@@ -35,3 +35,10 @@ export function pct(v: number | string, decimals = 1): string {
 export function t(lang: Lang, vi: string, en: string): string {
   return lang === 'vi' ? vi : en
 }
+
+/** ui-2.html:645 — month axis labels for the twelve-month charts. */
+export function monthLabels(lang: Lang): string[] {
+  return lang === 'vi'
+    ? ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12']
+    : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+}

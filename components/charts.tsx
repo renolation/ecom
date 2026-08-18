@@ -207,6 +207,12 @@ export function heatStyle(v: number, mn: number, mx: number): React.CSSPropertie
  * Deterministic pseudo-series used only for decorative sparklines (ui-2.html:465).
  * Seeded by a caller-supplied number so server and client agree.
  */
+/** ui-2.html:465 — the prototype's deterministic pseudo-random draw. */
+export function protoRandom(seed: number): number {
+  const x = Math.sin(seed) * 10000
+  return x - Math.floor(x)
+}
+
 export function walk(start: number, steps: number, vol: number, seed: number): number[] {
   const rnd = (s: number) => {
     const x = Math.sin(s) * 10000
