@@ -141,3 +141,25 @@
 @media (max-width: 1100px) {
   .bid-invite { grid-template-columns: 1fr 1fr; }
 }
+
+/* s_market — requirement form and rate cards (ui-2.html:1459). */
+.mk-grid{display:grid;grid-template-columns:1.15fr 1.15fr .95fr .62fr .8fr .95fr .95fr;gap:10px;align-items:end}
+.mk-grid-2{margin-top:11px}
+.mk-actions{display:flex;gap:8px;grid-column:span 2}
+.mk-actions .btn{height:34px;flex:1;justify-content:center}
+.mk-needs{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px;padding-top:11px;border-top:1px dashed var(--line);align-items:center}
+.mk-rate{display:grid;grid-template-columns:230px 1fr 122px 118px 150px 176px;gap:14px;align-items:center}
+.mk-leg{height:2px;background:var(--line-2);position:relative;margin:14px 4px}
+.mk-leg span{position:absolute;border-radius:50%}
+.mk-leg .a{left:0;top:-3px;width:8px;height:8px;background:var(--brand-500)}
+.mk-leg .t{left:50%;top:-2px;width:6px;height:6px;background:var(--gold-500);transform:translateX(-50%)}
+.mk-leg .b{right:0;top:-3px;width:8px;height:8px;background:var(--navy-700)}
+@media(max-width:1280px){
+  .mk-grid{grid-template-columns:repeat(3,1fr)}
+  .mk-actions{grid-column:auto}
+  .mk-rate{grid-template-columns:1fr 1fr;gap:12px}
+}
+/* The market sort switcher uses links so it stays server-rendered. */
+.seg a{padding:5px 12px;border:0;background:transparent;border-radius:7px;font-size:12px;font-weight:650;color:var(--text-2);cursor:pointer;transition:.13s;text-decoration:none}
+.seg a:hover{color:var(--text)}
+.seg a.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow-sm)}

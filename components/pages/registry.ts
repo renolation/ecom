@@ -22,7 +22,8 @@ import {
   AgentGovernancePage, CdpActivationPage, CdpUnifiedPage, LicencePage, NeutralityPage,
   SandboxPage,
 } from './governance'
-import { MarketPage, RfqPage } from './shipper-trading'
+import { MarketPage } from './shipper-market'
+import { RfqPage } from './shipper-trading'
 
 /**
  * Route → page component. Anything absent falls through to the placeholder in
