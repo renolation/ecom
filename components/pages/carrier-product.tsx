@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { walk } from '@/components/charts'
 import { Modal, ModalPanel, ModalRow, ModalStats, modalHref, openModalId } from '@/components/modal'
+import { ACTION_MODAL, SuspendListingModal } from './action-modals'
 import { ProductTreeRows, SourceTag } from '@/components/product-tree'
 import { DataTable } from '@/components/table/data-table'
 import { tableHref } from '@/components/table/table-types'
@@ -74,6 +75,11 @@ export async function ProductPage({ lang, basePath, searchParams }: RoutePagePro
         actions={
           <>
             <span className="btn">⬇ {t(lang, 'Xuất danh mục', 'Export')}</span>
+            <Link className="btn" scroll={false}
+              style={{ borderColor: 'var(--down)', color: 'var(--down)' }}
+              href={modalHref(basePath, searchParams, ACTION_MODAL.suspend)}>
+              {t(lang, 'Tạm ngừng niêm yết', 'Suspend listing')}
+            </Link>
             <span className="btn p">+ {t(lang, 'Sản phẩm mới', 'New product')}</span>
           </>
         }
@@ -321,6 +327,10 @@ export async function ProductPage({ lang, basePath, searchParams }: RoutePagePro
         <ProductModal
           product={openProduct} lang={lang} basePath={basePath} searchParams={searchParams}
         />
+      ) : null}
+
+      {openId === ACTION_MODAL.suspend ? (
+        <SuspendListingModal lang={lang} basePath={basePath} searchParams={searchParams} />
       ) : null}
     </>
   )

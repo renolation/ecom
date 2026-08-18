@@ -6,6 +6,8 @@ import {
   Card, DefinitionList, KpiTile, Legend, Meter, PageHeader, Tag, TierPill,
 } from '@/components/ui'
 import { tableHref } from '@/components/table/table-types'
+import { modalHref, openModalId } from '@/components/modal'
+import { BidSubmitModal, bidModalKey, bidModalRef } from './action-modals'
 import {
   RateHeatmap, RepriceModal, cellPasses,
   type HeatFilters, type RateCell, type RepriceTarget,
@@ -976,6 +978,8 @@ export async function BidInboxPage({ lang, basePath, searchParams }: RoutePagePr
     r.rfqStatus === 'open' && arr.findIndex((x) => x.rfq === r.rfq) === i)
   const pipelineValue = openTenders.reduce((a, r) => a + Number(r.rfqValue), 0)
   const closingSoon = openTenders.filter((r) => r.closesIn <= 2).length
+  const bidRef = bidModalRef(openModalId(searchParams))
+  const bidTarget = bidRef ? rows.find((r) => r.rfq === bidRef) ?? null : null
 
   return (
     <>
@@ -1048,7 +1052,10 @@ export async function BidInboxPage({ lang, basePath, searchParams }: RoutePagePr
                   </div>
                   <div className="flex" style={{ justifyContent: 'flex-end', gap: 6 }}>
                     <span className="btn sm">{t(lang, 'Bỏ qua', 'Decline')}</span>
-                    <span className="btn p sm">{t(lang, 'Chào giá', 'Bid')}</span>
+                    <Link className="btn p sm" scroll={false}
+                      href={modalHref(basePath, searchParams, bidModalKey(q.rfq))}>
+                      {t(lang, 'Chào giá', 'Bid')}
+                    </Link>
                   </div>
                 </div>
               </div>
@@ -1107,6 +1114,17 @@ export async function BidInboxPage({ lang, basePath, searchParams }: RoutePagePr
           },
         ]}
       />
+      {bidTarget ? (
+        <BidSubmitModal
+          reference={bidTarget.rfq}
+          client={bidTarget.shipper}
+          indexPrice={Number(bidTarget.indexPrice)}
+          estimate={Number(bidTarget.price)}
+          winProbability={Math.min(92, Math.max(28, bidTarget.score))}
+          transitDays={bidTarget.transit}
+          lang={lang} basePath={basePath} searchParams={searchParams}
+        />
+      ) : null}
     </>
   )
 }

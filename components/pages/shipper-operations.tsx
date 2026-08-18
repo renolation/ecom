@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { asc, eq } from 'drizzle-orm'
 import { BarChart, Gauge } from '@/components/charts'
 import { DataTable } from '@/components/table/data-table'
@@ -13,6 +14,7 @@ import { monthLabels, num, t, usd, type Lang } from '@/lib/i18n'
 import { carrierOptions, laneOptions, statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
 import { modalHref, openModalId } from '@/components/modal'
+import { ACTION_MODAL, EblEndorseModal, LcApplyModal } from './action-modals'
 import { ShipmentModal } from './record-modals'
 import type { RoutePageProps } from './page-props'
 
@@ -212,6 +214,7 @@ export async function DocumentsPage({ lang, basePath, searchParams }: RoutePageP
   const ebl = rows.filter((r) => r.isEbl)
   const fallback = rows.filter((r) => r.paperFallback)
   const endorsed = rows.filter((r) => r.status === 'endorsed')
+  const docOpenId = openModalId(searchParams)
 
   return (
     <>
@@ -220,6 +223,12 @@ export async function DocumentsPage({ lang, basePath, searchParams }: RoutePageP
         title={t(lang, 'Chứng từ & eB/L', 'Documents & eB/L')}
         modules={['F02']}
         sandbox={['SB-02']}
+        actions={
+          <Link className="btn p" scroll={false}
+            href={modalHref(basePath, searchParams, ACTION_MODAL.ebl)}>
+            {t(lang, 'Chuyển nhượng eB/L', 'Endorse eB/L')}
+          </Link>
+        }
         sub={t(lang,
           'Vận đơn điện tử theo nguyên tắc quyền kiểm soát duy nhất: mỗi thời điểm chỉ một bên nắm quyền, mọi lần ký hậu đều có dấu vết.',
           'Electronic bills of lading under single-control: exactly one party holds the record at a time and every endorsement is auditable.')}
@@ -280,6 +289,12 @@ export async function DocumentsPage({ lang, basePath, searchParams }: RoutePageP
           },
         ]}
       />
+      {docOpenId === ACTION_MODAL.ebl ? (
+        <EblEndorseModal
+          documents={ebl.slice(0, 8).map((d) => `${d.id} · ${d.shipment}`)}
+          lang={lang} basePath={basePath} searchParams={searchParams}
+        />
+      ) : null}
     </>
   )
 }
@@ -582,7 +597,10 @@ export async function LetterOfCreditPage({ lang, basePath, searchParams }: Route
         actions={
           <>
             <span className="btn">⬇ {t(lang, 'Mẫu hồ sơ', 'Template')}</span>
-            <span className="btn p">+ {t(lang, 'Mở L/C mới', 'New L/C')}</span>
+            <Link className="btn p" scroll={false}
+              href={modalHref(basePath, searchParams, ACTION_MODAL.lc)}>
+              + {t(lang, 'Mở L/C mới', 'New L/C')}
+            </Link>
           </>
         }
       />
@@ -756,6 +774,12 @@ export async function LetterOfCreditPage({ lang, basePath, searchParams }: Route
           { key: 'exp', header: t(lang, 'Hết hạn', 'Expires'), cls: 'c', width: '10%', sortValue: (r) => r.expiresOn, render: (r) => <span className="num">{r.expiresOn}</span> },
         ]}
       />
+      {openModalId(searchParams) === ACTION_MODAL.lc ? (
+        <LcApplyModal
+          shipments={[...new Set(rows.map((r) => r.shipment))].slice(0, 6)}
+          lang={lang} basePath={basePath} searchParams={searchParams}
+        />
+      ) : null}
     </>
   )
 }
