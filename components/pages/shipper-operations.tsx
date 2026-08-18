@@ -1,12 +1,15 @@
 import { asc, eq } from 'drizzle-orm'
+import { BarChart, Gauge } from '@/components/charts'
 import { DataTable } from '@/components/table/data-table'
-import { BoundaryNote, Card, KpiTile, Meter, PageHeader, Tag } from '@/components/ui'
+import {
+  BoundaryNote, Card, DefinitionList, KpiTile, Meter, PageHeader, Tag, TierPill,
+} from '@/components/ui'
 import { db } from '@/lib/db'
 import {
   carriers, consentGrants, consentPurposes, documents, documentTypes, lettersOfCredit,
   lcSteps, lcTypes, members, settlements, settlementTriggers, shipments, shipmentStatuses,
 } from '@/db/schema'
-import { num, t, usd, type Lang } from '@/lib/i18n'
+import { monthLabels, num, t, usd, type Lang } from '@/lib/i18n'
 import { carrierOptions, laneOptions, statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
 import { modalHref, openModalId } from '@/components/modal'
@@ -281,6 +284,31 @@ export async function DocumentsPage({ lang, basePath, searchParams }: RoutePageP
   )
 }
 
+/** ui-2.html:1980 — twelve months of freight spend, in bn VND. */
+const FREIGHT_SPEND = [6.2, 6.8, 7.1, 8.4, 9.2, 8.6, 10.1, 11.2, 10.4, 11.8, 12.6, 13.4]
+
+/** ui-2.html:2006 — products a licensed institution offers this member. */
+const WALLET_PRODUCTS: Array<[string, string, string, string, string, string, string, string, string]> = [
+  ['💳', 'Trả chậm cước vận chuyển', 'Freight payment terms',
+    'Hãng tàu được trả ngay, bạn trả sau 60–90 ngày', 'Carrier paid now, you settle in 60–90 days',
+    '6,8% p.a.', '6.8% p.a.', 'var(--brand-600)', 'F06'],
+  ['📄', 'Chiết khấu khoản phải thu', 'Receivable discounting',
+    'Bán khoản phải thu đã xác thực, nhận tiền trong 4 giờ', 'Sell verified receivables, funded within 4 hours',
+    '0,42%/tháng', '0.42%/mo', 'var(--up)', 'F06'],
+  ['📦', 'Tài trợ hàng tồn trên đường', 'Inventory-in-transit',
+    'Thế chấp bằng eB/L, tối đa 80% giá trị lô hàng', 'Secured by eB/L, up to 80% of cargo value',
+    '7,9% p.a.', '7.9% p.a.', 'var(--gold-500)', 'F06'],
+  ['🧾', 'Thư tín dụng số', 'Digital L/C',
+    'Mở, phát hành và xuất trình chứng từ trên nền tảng', 'Apply, issue and present documents on-platform',
+    'Theo biểu phí NH', 'Per bank tariff', 'var(--violet)', 'F05'],
+  ['🛡️', 'Bảo hiểm hàng hoá nhúng', 'Embedded cargo insurance',
+    'Một ô tích khi đặt chỗ, hồ sơ bồi thường tự dựng', 'One checkbox at booking, claim pack auto-built',
+    '0,11%', '0.11%', 'var(--brand-500)', 'F10'],
+  ['⏱️', 'Bảo hiểm trễ hàng theo tham số', 'Parametric delay cover',
+    'Chi trả khi vượt ngưỡng cam kết — có người duyệt', 'Pays out beyond agreed threshold — human-approved',
+    '0,22%', '0.22%', 'var(--violet)', 'F10'],
+]
+
 /** s_fin — Wallet, Escrow & Financing (ui-2.html:2001). */
 export async function WalletPage({ lang, basePath, searchParams }: RoutePageProps) {
   const [rows, labels] = await Promise.all([
@@ -308,8 +336,6 @@ export async function WalletPage({ lang, basePath, searchParams }: RoutePageProp
   const paid = rows.filter((r) => r.status === 'paid')
   const pending = rows.filter((r) => r.status === 'pending')
   const exceptions = rows.filter((r) => r.status === 'exception' || r.status === 'dispute')
-  const totalPaid = paid.reduce((a, r) => a + Number(r.amount), 0)
-  const held = pending.reduce((a, r) => a + Number(r.amount), 0)
 
   return (
     <>
@@ -317,27 +343,74 @@ export async function WalletPage({ lang, basePath, searchParams }: RoutePageProp
         crumb={t(lang, 'Chủ hàng · Tài chính', 'Shipper · Finance')}
         title={t(lang, 'Ví, Escrow & Tài trợ', 'Wallet, Escrow & Financing')}
         modules={['F06']}
-        sandbox={['SB-04', 'SB-07']}
+        sandbox={['SB-04 · SB-07']}
         sub={t(lang,
-          'Nền tảng không giữ tiền. Ngân hàng giữ và chi trả; nền tảng tạo mã tham chiếu, gắn mốc giải ngân và đối soát.',
-          'The platform holds no funds. Banks hold and move the money; the platform issues references, attaches milestones and reconciles.')}
+          'Toàn bộ dòng tiền logistics gắn với mã giao dịch. Tiền do ngân hàng giữ và chi trả; nền tảng tạo mã tham chiếu, gắn mốc và đối soát.',
+          'All logistics cash flow tied to the transaction ID. Banks hold and move the money; the platform creates references, attaches milestones and reconciles.')}
+        actions={
+          <>
+            <span className="btn">{t(lang, 'Nạp tiền', 'Top up')}</span>
+            <span className="btn p">{t(lang, 'Đề nghị tăng hạn mức', 'Request a limit increase')}</span>
+          </>
+        }
       />
 
       <div className="grid g5" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Đã thanh toán', 'Settled')} value={usd(totalPaid)}
-          meta={t(lang, `${num(paid.length)} khoản`, `${num(paid.length)} items`)} metaTone="u" />
-        <KpiTile label={t(lang, 'Đang giữ escrow', 'Held in escrow')} value={usd(held)}
-          meta={t(lang, `${num(pending.length)} chờ mốc`, `${num(pending.length)} awaiting trigger`)} metaTone="b" />
-        <KpiTile label={t(lang, 'Sai lệch / tranh chấp', 'Exceptions / disputes')} value={num(exceptions.length)}
-          meta={t(lang, 'chờ đối soát', 'pending reconciliation')} metaTone="d" />
-        <KpiTile label={t(lang, 'Khớp tự động', 'Auto-matched')}
-          value={num((rows.filter((r) => r.matched).length / rows.length) * 100, 1)} unit="%"
-          bar={(rows.filter((r) => r.matched).length / rows.length) * 100} />
-        <KpiTile label={t(lang, 'Thanh toán sớm', 'Early payment')}
-          value={num(rows.filter((r) => r.early).length)}
-          meta={t(lang, 'có chiết khấu', 'discount taken')} metaTone="u" />
+        <KpiTile label={t(lang, 'Số dư khả dụng', 'Available balance')} value="12.4"
+          unit={t(lang, 'tỷ đ', 'bn VND')}
+          meta={t(lang, 'TK HDBank · VLX-88214', 'HDBank a/c · VLX-88214')} metaTone="n" />
+        <KpiTile label={t(lang, 'Đang giữ escrow', 'Held in escrow')} value="5.6"
+          unit={t(lang, 'tỷ đ', 'bn VND')}
+          meta={t(lang, 'trên 12 booking', 'across 12 bookings')} />
+        <KpiTile label={t(lang, 'Hạn mức tín dụng', 'Credit limit')} value="40.0"
+          unit={t(lang, 'tỷ đ', 'bn VND')}
+          bar={38} meta={t(lang, 'đã dùng 38%', '38% drawn')} />
+        <KpiTile label={t(lang, 'Chi phí vốn bình quân', 'Blended cost of funds')} value="6.8"
+          unit="% p.a." meta={t(lang, '−2,4 pp so vay thường', '−2.4 pp vs standard loan')} metaTone="u" />
+        <KpiTile label={t(lang, 'Thời gian pre-check', 'Pre-check TAT')} value="11.4" unit="h"
+          meta={t(lang, 'ngưỡng KPI ≤24 giờ', 'KPI ≤24h')} metaTone="u" />
       </div>
 
+      <div className="grid g-2-1" style={{ marginBottom: 14 }}>
+        <Card title={t(lang, 'Dòng tiền logistics 12 tháng', 'Logistics cash flow — 12 months')}>
+          <BarChart
+            items={monthLabels(lang).map((m, i) => ({
+              l: m, v: FREIGHT_SPEND[i],
+              c: i > 9 ? 'var(--brand-400)' : 'var(--brand-500)',
+            }))}
+            height={210}
+            fmt={(v) => `${v.toFixed(0)} ${t(lang, 'tỷ', 'bn')}`}
+            valueLabel={(v) => (v > 11 ? v.toFixed(1) : '')}
+          />
+        </Card>
+
+        <Card title={t(lang, 'Hạn mức & điều kiện', 'Limit & terms')}
+          right={<Tag tone="u">HDBank</Tag>}>
+          <div style={{ textAlign: 'center', padding: '4px 0' }}>
+            <Gauge value={78} label={t(lang, 'Điểm tín nhiệm', 'Credit score')} size={170} />
+          </div>
+          <DefinitionList rows={[
+            [t(lang, 'Xếp hạng nội bộ', 'Internal rating'),
+              <Tag tone="u">A− {t(lang, 'Ổn định', 'Stable')}</Tag>],
+            [t(lang, 'Hạn mức được duyệt', 'Approved limit'),
+              <span className="num">40,0 {t(lang, 'tỷ đ', 'bn')}</span>],
+            [t(lang, 'Kỳ hạn trả chậm', 'Payment terms'), `60 ${t(lang, 'ngày', 'days')}`],
+            [t(lang, 'Lãi suất', 'Rate'), <span className="num">6,8% p.a.</span>],
+            [t(lang, 'Tài sản bảo đảm', 'Collateral'),
+              t(lang, 'Khoản phải thu + eB/L', 'Receivables + eB/L')],
+          ]} />
+          <div className="note" style={{ background: 'var(--up-bg)' }}>
+            <b style={{ color: 'var(--up)' }}>
+              ↑ {t(lang, 'Đủ điều kiện nâng hạn mức', 'Eligible for an increase')}
+            </b><br />
+            {t(lang,
+              '24 tháng thanh toán đúng hạn 100% và khối lượng tăng 34% → có thể nâng lên 64 tỷ đồng với lãi suất 6,2%. Quyết định thuộc HDBank.',
+              '24 months of 100% on-time payments and 34% volume growth → eligible for 64bn VND at 6.2%. The decision rests with HDBank.')}
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid g-3-2">
       <DataTable
         id="esc" lang={lang} basePath={basePath} searchParams={searchParams}
         title={t(lang, 'Escrow & quyết toán theo mốc', 'Escrow & milestone settlement')} rows={rows}
@@ -373,9 +446,71 @@ export async function WalletPage({ lang, basePath, searchParams }: RoutePageProp
           },
         ]}
       />
+        <Card title={t(lang, 'Sản phẩm khả dụng cho bạn', 'Products available to you')}
+          right={
+            <span className="sub">
+              {t(lang, 'Do tổ chức được cấp phép cung cấp', 'Provided by licensed institutions')}
+            </span>
+          }
+          bodyStyle={{ padding: 11 }}>
+          {WALLET_PRODUCTS.map(([icon, vi, en, dVi, dEn, rVi, rEn, color, mod]) => (
+            <div key={en} style={{
+              display: 'flex', gap: 10, alignItems: 'center', padding: 10,
+              border: '1px solid var(--line)', borderRadius: 'var(--r)', marginBottom: 7,
+            }}>
+              <div style={{ fontSize: 18 }}>{icon}</div>
+              <div style={{ flex: 1 }}>
+                <b style={{ fontSize: 12.5 }}>{t(lang, vi, en)}</b>
+                <span className="mod">{mod}</span>
+                <div className="muted">{t(lang, dVi, dEn)}</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div className="num" style={{ fontWeight: 750, color, fontSize: 12.5 }}>
+                  {t(lang, rVi, rEn)}
+                </div>
+                <span className="btn xs" style={{ marginTop: 4 }}>{t(lang, 'Đăng ký', 'Apply')}</span>
+              </div>
+            </div>
+          ))}
+        </Card>
+      </div>
     </>
   )
 }
+
+
+/** ui-2.html:2075 — the automated examination result for the detailed L/C. */
+const LC_EXAMINATION: Array<[string, string, boolean, number, string, string]> = [
+  ['eB/L', 'eB/L', true, 98,
+    'Khớp cảng đi/đến, ngày xếp hàng trong hạn', 'Ports and shipped-on-board date within terms'],
+  ['Hoá đơn thương mại', 'Commercial invoice', true, 96,
+    'Khớp giá trị và mô tả hàng hoá', 'Value and goods description match'],
+  ['Packing list', 'Packing list', true, 94,
+    'Khớp số lượng và trọng lượng', 'Quantity and weight match'],
+  ['C/O Form B', 'C/O Form B', false, 82,
+    'Ngày phát hành sau ngày xếp hàng 1 ngày — cần ngân hàng xem xét',
+    'Issued one day after shipment — requires bank review'],
+  ['Chứng nhận bảo hiểm', 'Insurance certificate', true, 97,
+    'Giá trị bảo hiểm ≥110% hoá đơn theo yêu cầu', 'Insured value ≥110% of invoice as required'],
+  ['Phiếu kiểm định', 'Inspection certificate', false, 74,
+    'Thiếu chữ ký của đơn vị kiểm định thứ ba', 'Missing third-party inspector signature'],
+]
+
+/** ui-2.html:2085 — why the digital flow beats the paper one. */
+const LC_FASTER: Array<[string, string, string, string]> = [
+  ['Chứng từ đã có sẵn trên nền tảng', 'Documents already on-platform',
+    'eB/L, hoá đơn, packing list được tạo từ cùng một hồ sơ giao dịch — không nhập lại',
+    'The eB/L, invoice and packing list come from the same transaction record — no re-keying'],
+  ['Kiểm tra tính đầy đủ ngay khi tạo', 'Completeness checked at creation',
+    'Sai lệch được phát hiện trước khi xuất trình, không phải sau 5 ngày làm việc',
+    'Discrepancies surface before presentation, not after five banking days'],
+  ['Dữ liệu vận chuyển đã được xác minh', 'Shipping data already verified',
+    'Ngày xếp hàng lấy từ TOS cảng và AIS, không phải từ tờ khai tự khai',
+    'Shipped-on-board dates come from port TOS and AIS, not from self-declaration'],
+  ['Quyền kiểm soát eB/L chuyển ngay', 'eB/L control transfers instantly',
+    'Không chờ chuyển phát vận đơn giấy giữa các ngân hàng',
+    'No courier of paper bills between banks'],
+]
 
 /** s_lc — Digital L/C (ui-2.html:2043). */
 export async function LetterOfCreditPage({ lang, basePath, searchParams }: RoutePageProps) {
@@ -398,12 +533,15 @@ export async function LetterOfCreditPage({ lang, basePath, searchParams }: Route
       expiresOn: lettersOfCredit.expiresOn,
       turnaround: lettersOfCredit.turnaroundHours,
       autoChecked: lettersOfCredit.autoChecked,
+      lane: lettersOfCredit.laneCode,
+      docCount: lettersOfCredit.docCount,
     })
       .from(lettersOfCredit)
       .innerJoin(lcTypes, eq(lcTypes.id, lettersOfCredit.lcTypeId))
       .innerJoin(lcSteps, eq(lcSteps.ordinal, lettersOfCredit.stepOrdinal))
       .innerJoin(members, eq(members.id, lettersOfCredit.applicantMemberId))
-      .orderBy(asc(lettersOfCredit.openedOn)),
+      // Insertion order, so the detailed L/C matches the prototype's LCS[0] pick.
+      .orderBy(asc(lettersOfCredit.id)),
     db.select().from(lcSteps).orderBy(asc(lcSteps.ordinal)),
     db.select().from(lcTypes).orderBy(asc(lcTypes.id)),
   ])
@@ -411,8 +549,25 @@ export async function LetterOfCreditPage({ lang, basePath, searchParams }: Route
   const settled = rows.filter((r) => r.step === 5)
   const examining = rows.filter((r) => r.step === 4)
   const withDiscrepancies = rows.filter((r) => r.discrepancies > 0)
-  const avgTat = rows.reduce((a, r) => a + Number(r.turnaround), 0) / rows.length
-  const totalAmount = rows.reduce((a, r) => a + Number(r.amount), 0)
+  const outstanding = rows.filter((r) => r.step < 5)
+  const outstandingValue = outstanding.reduce((a, r) => a + Number(r.amount), 0)
+
+  // The prototype details the first L/C sitting at the examination step.
+  const detail = rows.find((r) => r.step === 4) ?? rows[0]
+  const stepLabels: Array<[string, string]> = [
+    ['Lập hồ sơ', 'Apply'], ['Phát hành', 'Issue'], ['Thông báo', 'Advise'],
+    ['Xuất trình', 'Present'], ['Kiểm tra', 'Examine'], ['Thanh toán', 'Settle'],
+  ]
+
+  // ui-2.html:2081 — the chart uses abbreviated type labels, in lookup order.
+  const shortLabels = lang === 'vi'
+    ? ['KHN', 'UPAS', 'Trả ngay', 'Trả chậm', 'X.nhận']
+    : ['Irrev.', 'UPAS', 'Sight', 'Usance', 'Conf.']
+  const byType = types.map((ty, i) => ({
+    l: shortLabels[i] ?? (lang === 'vi' ? ty.nameVi : ty.nameEn),
+    v: rows.filter((r) => r.typeId === ty.id).length,
+    c: 'var(--brand-500)',
+  }))
 
   return (
     <>
@@ -422,24 +577,131 @@ export async function LetterOfCreditPage({ lang, basePath, searchParams }: Route
         modules={['F05']}
         sandbox={['SB-03']}
         sub={t(lang,
-          'Mở, theo dõi và xuất trình chứng từ L/C trên cùng hồ sơ giao dịch. Nền tảng kiểm tra tính đầy đủ và gợi ý sai lệch; ngân hàng phát hành và quyết định thanh toán.',
+          'Mở, theo dõi và xuất trình chứng từ L/C ngay trên hồ sơ giao dịch. Nền tảng kiểm tra tính đầy đủ và gợi ý sai lệch; ngân hàng phát hành và quyết định thanh toán.',
           'Apply, track and present L/C documents against the same transaction record. The platform checks completeness and flags discrepancies; the bank issues and decides payment.')}
+        actions={
+          <>
+            <span className="btn">⬇ {t(lang, 'Mẫu hồ sơ', 'Template')}</span>
+            <span className="btn p">+ {t(lang, 'Mở L/C mới', 'New L/C')}</span>
+          </>
+        }
       />
 
       <div className="grid g5" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Tổng L/C', 'Total L/C')} value={num(rows.length)} />
-        <KpiTile label={t(lang, 'Tổng giá trị', 'Total value')} value={usd(totalAmount)} />
-        <KpiTile label={t(lang, 'Đang kiểm tra chứng từ', 'Under examination')} value={num(examining.length)}
-          meta={t(lang, 'ngân hàng đang xét', 'with the bank')} metaTone="gd" />
-        <KpiTile label={t(lang, 'Có sai lệch', 'With discrepancies')} value={num(withDiscrepancies.length)}
-          meta={t(lang, 'cần bổ sung', 'amendment needed')} metaTone="d" />
-        <KpiTile label={t(lang, 'Thời gian xử lý TB', 'Average turnaround')} value={num(avgTat, 1)} unit="h"
-          meta={t(lang, `${num(settled.length)} đã thanh toán`, `${num(settled.length)} settled`)} metaTone="u" />
+        <KpiTile label={t(lang, 'L/C đang lưu hành', 'L/C outstanding')} value={num(outstanding.length)}
+          meta={t(lang, `trên ${rows.length} luỹ kế`, `of ${rows.length} cumulative`)} />
+        <KpiTile label={t(lang, 'Giá trị đang lưu hành', 'Outstanding value')}
+          value={`${usd(Math.round(outstandingValue / 1000))}K`}
+          meta={t(lang, `${num(withDiscrepancies.length)} bộ có sai lệch`, `${num(withDiscrepancies.length)} with discrepancies`)}
+          metaTone="gd" />
+        <KpiTile label={t(lang, 'Thời gian phát hành', 'Issuance TAT')} value="18.4" unit="h"
+          meta={t(lang, 'trước đây 4,2 ngày', 'was 4.2 days')} metaTone="u" />
+        <KpiTile label={t(lang, 'Tỷ lệ sai lệch chứng từ', 'Discrepancy rate')} value="6.4" unit="%"
+          meta={t(lang, 'ngành thường 48%', 'industry ~48%')} metaTone="u" />
+        <KpiTile label={t(lang, 'Kiểm tra tự động', 'Auto-checked')} value="72" unit="%"
+          meta={t(lang, 'AI · mức L2 có người duyệt', 'AI · L2 with approval')} metaTone="v" />
+      </div>
+
+      <div className="grid g-2-1" style={{ marginBottom: 14 }}>
+        <Card
+          title={`${detail.id} · ${lang === 'vi' ? detail.typeVi : detail.typeEn}`}
+          right={
+            <>
+              <Tag tone="b">{detail.bank}</Tag>
+              {detail.discrepancies
+                ? <Tag tone="d">{detail.discrepancies} {t(lang, 'sai lệch', 'discrepancies')}</Tag>
+                : <Tag tone="u">{t(lang, 'Không sai lệch', 'No discrepancy')}</Tag>}
+            </>
+          }
+          footer={t(lang,
+            'Ngân hàng đang kiểm tra — hạn trả lời theo UCP 600: 5 ngày làm việc',
+            'Bank examining — UCP 600 response deadline: 5 banking days')}>
+          <div className="stepper" style={{ marginBottom: 16 }}>
+            {stepLabels.map(([vi, en], i) => (
+              <div key={en} className={`step ${i < detail.step ? 'done' : i === detail.step ? 'on' : ''}`}>
+                <i>{i < detail.step ? '✓' : i + 1}</i>
+                <span>{t(lang, vi, en)}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid g2" style={{ gap: 12 }}>
+            <DefinitionList rows={[
+              [t(lang, 'Người thụ hưởng', 'Beneficiary'), detail.beneficiary],
+              [t(lang, 'Ngân hàng phát hành', 'Issuing bank'), detail.bank],
+              [t(lang, 'Giá trị', 'Value'),
+                <span className="num" style={{ fontSize: 15 }}>{usd(detail.amount)}</span>],
+            ]} />
+            <DefinitionList rows={[
+              [t(lang, 'Lô hàng gắn kèm', 'Linked shipment'),
+                <span className="num" style={{ fontSize: 11.5 }}>{detail.shipment}</span>],
+              [t(lang, 'Tuyến', 'Lane'), detail.lane],
+              [t(lang, 'Ngày mở / hết hạn', 'Opened / expiry'),
+                <span className="num">{detail.openedOn} → {detail.expiresOn}</span>],
+              [t(lang, 'Bộ chứng từ', 'Document set'),
+                <span className="num">{detail.docCount} {t(lang, 'loại', 'types')}</span>],
+            ]} />
+          </div>
+
+          <div className="sep" />
+          <b style={{ fontSize: 12.5 }}>
+            {t(lang, 'Kiểm tra chứng từ tự động', 'Automated document examination')}{' '}
+            <TierPill tier={2} lang={lang} />
+          </b>
+          <div className="tbl-wrap" style={{ maxHeight: 'none', marginTop: 8 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t(lang, 'Chứng từ', 'Document')}</th>
+                  <th className="c">{t(lang, 'Đối chiếu điều kiện L/C', 'Against L/C terms')}</th>
+                  <th className="c">{t(lang, 'Tin cậy', 'Confidence')}</th>
+                  <th>{t(lang, 'Ghi chú', 'Note')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {LC_EXAMINATION.map(([nVi, nEn, compliant, confidence, noteVi, noteEn]) => (
+                  <tr key={nEn}>
+                    <td><b style={{ fontSize: 12 }}>{t(lang, nVi, nEn)}</b></td>
+                    <td className="c">
+                      <Tag tone={compliant ? 'u' : 'gd'}>
+                        {compliant ? t(lang, 'Phù hợp', 'Compliant') : t(lang, 'Cần xem xét', 'Needs review')}
+                      </Tag>
+                    </td>
+                    <td className="c num">{confidence}%</td>
+                    <td style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{t(lang, noteVi, noteEn)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="note">
+            <b>{t(lang, 'Ranh giới quyết định', 'Decision boundary')}:</b>{' '}
+            {t(lang,
+              'AI chỉ đánh dấu và giải thích. Việc chấp nhận hay từ chối bộ chứng từ, và quyết định thanh toán, thuộc về chuyên viên ngân hàng phát hành. Mọi lần ghi đè đều được lưu vào decision trace.',
+              'AI only flags and explains. Accepting or refusing the document set, and the payment decision, rest with the issuing bank’s officer. Every override is written to the decision trace.')}
+          </div>
+        </Card>
+
+        <div className="stack">
+          <Card title={t(lang, 'Phân bố theo loại L/C', 'Mix by L/C type')}>
+            <BarChart items={byType} height={170} valueLabel={(v) => num(v)} />
+          </Card>
+
+          <Card title={t(lang, 'Vì sao L/C số nhanh hơn', 'Why digital L/C is faster')}
+            bodyStyle={{ padding: 11 }}>
+            {LC_FASTER.map(([vi, en, dVi, dEn]) => (
+              <div key={en} style={{ padding: '8px 0', borderBottom: '1px dashed var(--line)' }}>
+                <b style={{ fontSize: 12, color: 'var(--up)' }}>✓ {t(lang, vi, en)}</b>
+                <div className="muted" style={{ marginTop: 2 }}>{t(lang, dVi, dEn)}</div>
+              </div>
+            ))}
+          </Card>
+        </div>
       </div>
 
       <DataTable
         id="lc" lang={lang} basePath={basePath} searchParams={searchParams}
-        title={t(lang, 'Thư tín dụng', 'Letters of credit')} rows={rows}
+        title={t(lang, 'Danh sách thư tín dụng', 'Letter of credit register')} rows={rows}
         searchPlaceholder={t(lang, 'Tìm mã L/C, bên thụ hưởng…', 'Search L/C, beneficiary…')}
         search={(r) => `${r.id} ${r.applicant} ${r.beneficiary} ${r.bank} ${r.shipment}`}
         filters={[

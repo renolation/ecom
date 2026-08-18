@@ -190,7 +190,64 @@ export async function LicencePage({ lang }: RoutePageProps) {
   )
 }
 
-/** a_agents — AI Agent Governance (ui-2.html:4633). */
+/** ui-2.html:4625 — the three autonomy tiers and what each one may do unaided. */
+const AUTONOMY_TIERS: Array<{
+  tier: 1 | 2 | 3
+  vi: string; en: string
+  scopeVi: string; scopeEn: string
+  mechVi: string; mechEn: string
+  color: string; bg: string
+}> = [
+  {
+    tier: 1, vi: 'Xanh — Tự động', en: 'Green — automated',
+    scopeVi: 'Trích xuất chứng từ, so sánh báo giá, ETA, cảnh báo dữ liệu thiếu',
+    scopeEn: 'Document extraction, quote comparison, ETA, missing-data alerts',
+    mechVi: 'Tự thực hiện; có ghi nhật ký và giám sát',
+    mechEn: 'Executes autonomously; logged and monitored',
+    color: 'var(--up)', bg: 'var(--up-bg)',
+  },
+  {
+    tier: 2, vi: 'Vàng — Đề xuất', en: 'Amber — advisory',
+    scopeVi: 'Điểm rủi ro, điều khoản tài trợ, báo giá bảo hiểm, tuyến thay thế, giá niêm yết',
+    scopeEn: 'Risk scores, financing terms, insurance quotes, alternative routing, rate publishing',
+    mechVi: 'Người có thẩm quyền phải duyệt trước khi có hiệu lực',
+    mechEn: 'An authorised person must approve before it takes effect',
+    color: 'var(--gold-500)', bg: 'var(--gold-100)',
+  },
+  {
+    tier: 3, vi: 'Đỏ — Không tự quyết', en: 'Red — human-only',
+    scopeVi: 'Từ chối tín dụng, báo cáo STR chính thức, giải ngân, từ chối hoặc chi trả bồi thường lớn, thay đổi quyền sở hữu',
+    scopeEn: 'Credit refusal, official STR filing, disbursement, large claim refusal or payout, change of title',
+    mechVi: 'Bắt buộc phê duyệt đa lớp và lưu audit trail đầy đủ',
+    mechEn: 'Multi-level approval and a full audit trail are mandatory',
+    color: 'var(--down)', bg: 'var(--down-bg)',
+  },
+]
+
+/** ui-2.html:4676 — the trace is auditable by design; the reasoning chain is not kept. */
+const TRACE_CONTENTS: Array<[string, string, boolean]> = [
+  ['Đầu vào đã rút gọn', 'Reduced input', true],
+  ['Nguồn dữ liệu và độ mới', 'Data sources and recency', true],
+  ['Phiên bản chính sách và mô hình', 'Policy and model version', true],
+  ['Các lệnh gọi công cụ', 'Tool calls made', true],
+  ['Kết quả đầu ra', 'Output produced', true],
+  ['Điểm tin cậy', 'Confidence score', true],
+  ['Người phê duyệt', 'Approver identity', true],
+  ['Nội dung và lý do ghi đè', 'Override content and reason', true],
+  ['Chuỗi suy luận nội bộ của mô hình', 'The model’s internal reasoning chain', false],
+]
+
+/** ui-2.html:4686 — each metric with its KPI threshold. */
+const MODEL_QUALITY: Array<[string, string, number, number]> = [
+  ['Độ chính xác trên bộ test', 'Accuracy on the test set', 91.6, 90],
+  ['Tỷ lệ dương tính giả (AML)', 'False-positive rate (AML)', 18.4, 25],
+  ['Tỷ lệ người ghi đè', 'Human override rate', 14.8, 20],
+  ['Trôi mô hình 30 ngày (drift)', '30-day model drift', 3.2, 5],
+  ['Khiếu nại về kết quả chấm điểm', 'Complaints about scoring', 2, 5],
+  ['Sự cố liên quan tới AI', 'AI-related incidents', 0, 1],
+]
+
+/** a_agents — AI Agent Governance (ui-2.html:4617). */
 export async function AgentGovernancePage({ lang, basePath, searchParams }: RoutePageProps) {
   const [agents, runs, actions, labels] = await Promise.all([
     db.select().from(aiAgents).orderBy(asc(aiAgents.id)),
@@ -219,79 +276,112 @@ export async function AgentGovernancePage({ lang, basePath, searchParams }: Rout
     statusLabelMap(lang),
   ])
 
-  const overrides = runs.filter((r) => r.outcome === 'override')
-  const escalated = runs.filter((r) => r.outcome === 'esc')
-  const tier3 = runs.filter((r) => r.tier === 3)
-  const avgConfidence = runs.reduce((a, r) => a + r.confidence, 0) / runs.length
-
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'Trí tuệ nhân tạo · Quản trị', 'Artificial intelligence · Governance')}
+        crumb={t(lang, 'Quản trị AI', 'AI governance')}
         title={t(lang, 'Quản trị AI Agent', 'AI Agent Governance')}
         modules={['F15']}
+        sandbox={['SB-06']}
         sub={t(lang,
-          'Bảy agent chuyên trách, phân theo ba tầng thẩm quyền. Tầng 1 tự động; tầng 2 chỉ đề xuất; tầng 3 không bao giờ tự quyết — luôn phải có người phê duyệt có tên.',
-          'Seven specialised agents across three authority tiers. Tier 1 acts automatically; tier 2 only advises; tier 3 never decides — a named human always approves.')}
+          'Một orchestrator và bảy agent chuyên trách. Mỗi agent có chủ sở hữu nghiệp vụ, phạm vi tác vụ được phép, hành động bị cấm và tuyến escalation. Hệ thống lưu decision trace, không lưu chuỗi suy luận nội bộ.',
+          'One orchestrator and seven specialised agents. Each has a business owner, permitted task scope, prohibited actions and an escalation path. The system stores a decision trace, not the internal reasoning chain.')}
+        actions={
+          <>
+            <span className="btn">⬇ {t(lang, 'Xuất decision trace', 'Export trace')}</span>
+            <span className="btn" style={{ borderColor: 'var(--down)', color: 'var(--down)' }}>
+              {t(lang, 'Hạ quyền agent', 'Downgrade an agent')}
+            </span>
+          </>
+        }
       />
 
-      <div className="grid g5" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Agent', 'Agents')} value={num(agents.length)} />
-        <KpiTile label={t(lang, 'Lượt chạy', 'Runs logged')} value={num(runs.length)} />
-        <KpiTile label={t(lang, 'Tầng 3', 'Tier 3')} value={num(tier3.length)}
-          meta={t(lang, 'luôn có người duyệt', 'always human-approved')} metaTone="u" />
-        <KpiTile label={t(lang, 'Người ghi đè', 'Human overrides')} value={num(overrides.length)}
-          bar={(overrides.length / runs.length) * 100} />
-        <KpiTile label={t(lang, 'Độ tin cậy TB', 'Average confidence')} value={num(avgConfidence, 1)} unit="%"
-          meta={t(lang, `${num(escalated.length)} chuyển cấp`, `${num(escalated.length)} escalated`)} metaTone="gd" />
+      <div className="grid g3" style={{ marginBottom: 14 }}>
+        {AUTONOMY_TIERS.map((ty) => (
+          <div className="card" key={ty.tier}>
+            <div className="card-h" style={{ background: ty.bg }}>
+              <h3>{t(lang, ty.vi, ty.en)}</h3>
+              <b className="num" style={{ fontSize: 19, color: ty.color }}>
+                {agents.filter((a) => a.tier === ty.tier).length}
+              </b>
+            </div>
+            <div className="card-b" style={{ padding: 11 }}>
+              <div style={{ marginBottom: 8 }}><TierPill tier={ty.tier} lang={lang} /></div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{t(lang, ty.scopeVi, ty.scopeEn)}</div>
+              <div className="note" style={{ marginTop: 9 }}>
+                <b>{t(lang, 'Cơ chế', 'Mechanism')}:</b> {t(lang, ty.mechVi, ty.mechEn)}
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
-      <Card title={t(lang, 'Bảy AI sub-agent và giới hạn thẩm quyền', 'The seven sub-agents and their authority limits')}
-        bodyStyle={{ padding: 0 }}>
+      <Card
+        title={t(lang, 'Bảy AI Agent chuyên trách', 'The seven specialised agents')}
+        right={
+          <>
+            <span className="mod">§7.3</span>
+            <span className="sub">
+              {t(lang, 'Orchestrator điều phối, không tự thực hiện hành động nghiệp vụ',
+                'The orchestrator coordinates; it does not itself execute business actions')}
+            </span>
+          </>
+        }
+        bodyStyle={{ padding: 0 }}
+        footer={t(lang,
+          'Ngưỡng KPI: độ chính xác ≥90% trên bộ test đã thống nhất. Agent có dấu hiệu suy giảm (drift) hoặc tỷ lệ ghi đè tăng bất thường phải bị hạ quyền hoặc trả về quy trình thủ công.',
+          'KPI threshold: accuracy ≥90% on the agreed test set. An agent showing drift or an abnormal rise in override rate must be downgraded or reverted to a manual process.')}>
         <div className="tbl-wrap" style={{ maxHeight: 'none' }}>
           <table className="tbl">
             <thead>
               <tr>
-                <th style={{ width: '18%' }}>Agent</th>
-                <th style={{ width: '24%' }}>{t(lang, 'Nhiệm vụ', 'Task')}</th>
-                <th style={{ width: '28%' }}>{t(lang, 'Giới hạn thẩm quyền', 'Authority limit')}</th>
-                <th className="c" style={{ width: '8%' }}>{t(lang, 'Tầng', 'Tier')}</th>
-                <th className="r" style={{ width: '8%' }}>{t(lang, 'Lượt chạy', 'Runs')}</th>
-                <th style={{ width: '14%' }}>{t(lang, 'Chính xác / ghi đè', 'Accuracy / override')}</th>
+                <th style={{ width: '15%' }}>Agent</th>
+                <th style={{ width: '21%' }}>{t(lang, 'Nhiệm vụ', 'Task')}</th>
+                <th style={{ width: '27%' }}>{t(lang, 'Chốt kiểm soát', 'Control point')}</th>
+                <th className="c" style={{ width: '10%' }}>{t(lang, 'Mức tự chủ', 'Autonomy')}</th>
+                <th className="r" style={{ width: '8%' }}>{t(lang, 'Lần chạy 30N', 'Runs 30d')}</th>
+                <th style={{ width: '10%' }}>{t(lang, 'Độ chính xác', 'Accuracy')}</th>
+                <th style={{ width: '9%' }}>{t(lang, 'Tỷ lệ ghi đè', 'Override rate')}</th>
               </tr>
             </thead>
             <tbody>
-              {agents.map((a) => (
-                <tr key={a.id}>
-                  <td>
-                    <div className="flex" style={{ gap: 7 }}>
-                      <span style={{ fontSize: 16 }}>{a.icon}</span>
-                      <b style={{ fontSize: 12 }}>{lang === 'vi' ? a.nameVi : a.nameEn}</b>
-                    </div>
-                  </td>
-                  <td style={{ fontSize: 11.5 }}>{lang === 'vi' ? a.taskVi : a.taskEn}</td>
-                  <td style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{lang === 'vi' ? a.controlVi : a.controlEn}</td>
-                  <td className="c">
-                    <Tag tone={a.tier === 1 ? 'u' : a.tier === 2 ? 'gd' : 'd'}>
-                      L{a.tier}
-                    </Tag>
-                  </td>
-                  <td className="r num">{num(a.runs)}</td>
-                  <td>
-                    <Meter value={Number(a.accuracy)} width={70} />
-                    <div className="muted num">{t(lang, 'ghi đè', 'override')} {num(a.overrideRate, 1)}%</div>
-                  </td>
-                </tr>
-              ))}
+              {agents.map((a) => {
+                const accuracy = Math.round(Number(a.accuracy))
+                const override = Math.round(Number(a.overrideRate))
+                return (
+                  <tr key={a.id}>
+                    <td>
+                      <div className="flex" style={{ gap: 8 }}>
+                        <span style={{ fontSize: 16 }}>{a.icon}</span>
+                        <b style={{ fontSize: 12.5 }}>{lang === 'vi' ? a.nameVi : a.nameEn}</b>
+                      </div>
+                    </td>
+                    <td style={{ fontSize: 11.5 }}>{lang === 'vi' ? a.taskVi : a.taskEn}</td>
+                    <td style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                      {lang === 'vi' ? a.controlVi : a.controlEn}
+                    </td>
+                    <td className="c"><TierPill tier={a.tier as 1 | 2 | 3} lang={lang} /></td>
+                    <td className="r num">{num(a.runs)}</td>
+                    <td>
+                      <Meter value={accuracy} width={52}
+                        color={accuracy >= 90 ? 'var(--up)' : 'var(--gold-500)'} />
+                    </td>
+                    <td>
+                      <Meter value={override} width={52}
+                        color={override > 20 ? 'var(--down)' : override > 10 ? 'var(--gold-500)' : 'var(--up)'} />
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       </Card>
 
-      <div style={{ marginTop: 14 }}>
+      <div className="grid g-3-2" style={{ marginTop: 14 }}>
         <DataTable
           id="run" lang={lang} basePath={basePath} searchParams={searchParams}
-          title={t(lang, 'Nhật ký lượt chạy', 'Run log')} rows={runs} pageSize={14}
+          title={t(lang, 'Nhật ký decision trace', 'Decision trace log')} rows={runs} pageSize={14}
           searchPlaceholder={t(lang, 'Tìm mã, người duyệt, mô hình…', 'Search reference, approver, model…')}
           search={(r) => `${r.id} ${r.approver} ${r.model} ${r.shipment}`}
           filters={[
@@ -347,10 +437,51 @@ export async function AgentGovernancePage({ lang, basePath, searchParams }: Rout
             },
           ]}
         />
+        <div className="stack">
+          <Card title={t(lang, 'Nội dung decision trace', 'What the decision trace records')}
+            bodyStyle={{ padding: 11 }}>
+            {TRACE_CONTENTS.map(([vi, en, stored]) => (
+              <div key={en} className="between" style={{ padding: '6px 0', borderBottom: '1px dashed var(--line)' }}>
+                <span style={{ fontSize: 11.5 }}>{t(lang, vi, en)}</span>
+                <Tag tone={stored ? 'u' : 'd'}>
+                  {stored ? `✓ ${t(lang, 'Có lưu', 'Stored')}` : `✕ ${t(lang, 'Không lưu', 'Not stored')}`}
+                </Tag>
+              </div>
+            ))}
+            <div className="note">
+              {t(lang,
+                'Không lưu chuỗi suy luận nội bộ là một quyết định thiết kế có chủ ý: nó không có giá trị pháp lý, khó kiểm chứng, và làm tăng rủi ro dữ liệu. Thứ cần kiểm toán được là đầu vào, đầu ra và người duyệt.',
+                'Not storing the internal reasoning chain is a deliberate design choice: it has no legal standing, cannot be reliably verified and increases data risk. What must be auditable is the input, the output and the approver.')}
+            </div>
+          </Card>
+
+          <Card title={t(lang, 'Giám sát chất lượng mô hình', 'Model quality monitoring')}>
+            {MODEL_QUALITY.map(([vi, en, value, threshold]) => (
+              <div key={en} style={{ marginBottom: 10 }}>
+                <div className="between">
+                  <span style={{ fontSize: 11.5 }}>{t(lang, vi, en)}</span>
+                  <b className="num">
+                    {num(value, 1)} <span className="muted">/ {t(lang, 'ngưỡng', 'threshold')} {threshold}</span>
+                  </b>
+                </div>
+                <div className="bar" style={{ marginTop: 4 }}>
+                  <i style={{ width: `${Math.min(100, (value / threshold) * 100)}%`, background: 'var(--up)' }} />
+                </div>
+              </div>
+            ))}
+            <div className="note">
+              <b>{t(lang, 'Nguyên tắc cứng', 'A hard rule')}:</b>{' '}
+              {t(lang,
+                'AI không được truy cập khoá mã hoá, tiền của khách hàng, dữ liệu nhạy cảm ngoài phạm vi hay chức năng giải ngân — kể cả ở mức tự chủ xanh.',
+                'AI may not access encryption keys, client funds, out-of-scope sensitive data or disbursement functions — not even at the green autonomy tier.')}
+            </div>
+          </Card>
+        </div>
       </div>
     </>
   )
 }
+
 
 /** a_gov — Neutrality & Data (ui-2.html:4719). */
 export async function NeutralityPage({ lang }: RoutePageProps) {

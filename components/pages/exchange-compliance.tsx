@@ -1,7 +1,9 @@
 import { asc, eq, sql } from 'drizzle-orm'
 import { Donut } from '@/components/charts'
 import { DataTable } from '@/components/table/data-table'
-import { Card, KpiTile, Legend, Meter, OrgCell, PageHeader, Tag } from '@/components/ui'
+import {
+  Card, KpiTile, Legend, Meter, OrgCell, PageHeader, Tag, TierPill,
+} from '@/components/ui'
 import { db } from '@/lib/db'
 import {
   amlAlerts, amlAlertTypes, disputes, disputeIssueTypes, evidenceSources, memberTypes,
@@ -228,9 +230,25 @@ export async function MembersPage({ lang, basePath, searchParams }: RoutePagePro
   )
 }
 
+/** ui-2.html:3764 — what the agent may do versus what only the officer may do. */
+const AML_BOUNDARY: Array<[string, string, string, Array<[string, string]>]> = [
+  ['AI Agent làm', 'The AI agent does', 'var(--up)', [
+    ['Phát hiện mẫu hình bất thường trên toàn sổ giao dịch', 'Detect anomalous patterns across the whole trade ledger'],
+    ['Chấm điểm rủi ro và giải thích tín hiệu nào kích hoạt', 'Score risk and explain which signals fired'],
+    ['Dựng hồ sơ STR nháp kèm chứng cứ có dấu thời gian', 'Draft the STR with timestamped evidence'],
+    ['Đề xuất mức xử lý và tuyến escalation', 'Propose a disposition and escalation path'],
+  ]],
+  ['Chỉ cán bộ tuân thủ được làm', 'Only the compliance officer may', 'var(--down)', [
+    ['Quyết định chặn giao dịch hoặc đóng băng tài khoản', 'Decide to block a transaction or freeze an account'],
+    ['Ký và gửi báo cáo giao dịch đáng ngờ chính thức', 'Sign and file the official suspicious transaction report'],
+    ['Đóng cảnh báo mức cao', 'Close a high-severity alert'],
+    ['Quyết định chấm dứt tư cách thành viên', 'Decide to terminate membership'],
+  ]],
+]
+
 /** x_aml — AML / Sanctions / STR (ui-2.html:3750). */
 export async function AmlPage({ lang, basePath, searchParams }: RoutePageProps) {
-  const [rows, types, labels] = await Promise.all([
+  const [rows, types, labels, memberCount] = await Promise.all([
     db.select({
       id: amlAlerts.id,
       typeVi: amlAlertTypes.nameVi,
@@ -253,39 +271,71 @@ export async function AmlPage({ lang, basePath, searchParams }: RoutePageProps) 
       .orderBy(asc(amlAlerts.raisedOn)),
     db.select().from(amlAlertTypes).orderBy(asc(amlAlertTypes.id)),
     statusLabelMap(lang),
+    db.select({ n: sql<number>`count(*)::int` }).from(members),
   ])
 
   const high = rows.filter((r) => r.severity === 'high')
+  const openAlerts = rows.filter((r) => r.status === 'open' || r.status === 'review')
   const openHigh = high.filter((r) => r.status === 'open' || r.status === 'review')
   const str = rows.filter((r) => r.status === 'str')
   const agentFlagged = rows.filter((r) => r.agentFlagged)
+  const agentShare = Math.round((agentFlagged.length / rows.length) * 100)
+
+  const byType = [...rows.reduce((m, r) => {
+    const k = lang === 'vi' ? r.typeVi : r.typeEn
+    return m.set(k, (m.get(k) ?? 0) + 1)
+  }, new Map<string, number>())]
+    .map(([k, v]) => ({ k, v }))
+    .sort((a, b) => b.v - a.v)
+
+  /** ui-2.html:3785 — screening coverage; the member count comes from the register. */
+  const screening: Array<[string, string, string, string, string]> = [
+    ['Danh sách đã rà soát', 'Lists screened', '14',
+      'OFAC, EU, UN, UK, VN và danh sách nội bộ', 'OFAC, EU, UN, UK, VN and internal lists'],
+    ['Thành viên rà soát / 24 giờ', 'Members rescreened / 24h', num(memberCount[0]?.n ?? 0),
+      'cộng toàn bộ UBO đã xác định', 'plus all identified UBOs'],
+    ['Trùng khớp cần xem xét', 'Matches for review', '6',
+      'tất cả đều đang chờ người quyết định', 'all awaiting a human decision'],
+    ['Trùng khớp đã xác nhận', 'Confirmed matches', '0',
+      'không thành viên nào bị cấm vận', 'no member is sanctioned'],
+  ]
 
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'Vận hành Nền tảng · Tuân thủ', 'Platform Operations · Compliance')}
+        crumb={t(lang, 'Vận hành nền tảng · Tuân thủ', 'Platform ops · Compliance')}
         title={t(lang, 'AML / Cấm vận / STR', 'AML / Sanctions / STR')}
         modules={['F12']}
         sub={t(lang,
-          'Agent phát hiện mẫu hình và dựng hồ sơ nháp — đây là tác vụ tầng 3, agent không bao giờ tự quyết. Chặn giao dịch hoặc nộp báo cáo STR luôn do cán bộ AML quyết định.',
-          'The agent detects patterns and drafts files — a tier-3 task, so it never decides. Blocking a transaction or filing an STR is always the AML officer’s decision.')}
+          'Rà soát cấm vận, giám sát giao dịch và dựng hồ sơ báo cáo giao dịch đáng ngờ. AI phát hiện mẫu hình và dựng bản nháp; cán bộ tuân thủ quyết định chặn hay báo cáo.',
+          'Sanctions screening, transaction monitoring and STR drafting. AI detects patterns and drafts; the compliance officer decides to block or report.')}
+        actions={
+          <>
+            <span className="btn">⬇ {t(lang, 'Báo cáo tháng', 'Monthly report')}</span>
+            <span className="btn" style={{ borderColor: 'var(--down)', color: 'var(--down)' }}>
+              {t(lang, 'Dựng hồ sơ STR', 'Draft an STR')}
+            </span>
+          </>
+        }
       />
 
       <div className="grid g5" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Tổng cảnh báo', 'Total alerts')} value={num(rows.length)} />
-        <KpiTile label={t(lang, 'Mức cao đang mở', 'High severity open')} value={num(openHigh.length)}
-          meta={t(lang, 'cần xử lý ngay', 'act now')} metaTone="d" />
-        <KpiTile label={t(lang, 'Đã nộp STR', 'STR filed')} value={num(str.length)}
-          meta={t(lang, 'do cán bộ AML quyết định', 'officer-decided')} metaTone="gd" />
-        <KpiTile label={t(lang, 'Agent phát hiện', 'Agent-detected')} value={num(agentFlagged.length)}
-          bar={(agentFlagged.length / rows.length) * 100} />
-        <KpiTile label={t(lang, 'Giá trị liên quan', 'Exposed value')}
-          value={num(rows.reduce((a, r) => a + Number(r.value), 0))} unit={t(lang, 'tr đ', 'm VND')} />
+        <KpiTile label={t(lang, 'Cảnh báo 30 ngày', 'Alerts in 30 days')} value={num(rows.length)}
+          meta={`${agentShare}% ${t(lang, 'do AI phát hiện', 'AI-detected')}`} metaTone="b" />
+        <KpiTile label={t(lang, 'Đang xử lý', 'Under investigation')} value={num(openAlerts.length)}
+          meta={t(lang, `${openHigh.length} mức cao`, `${openHigh.length} high severity`)} metaTone="d" />
+        <KpiTile label={t(lang, 'Đã báo cáo STR', 'STRs filed')} value={num(str.length)}
+          meta={t(lang, '100% có người phê duyệt', '100% human-approved')} metaTone="gd" />
+        <KpiTile label={t(lang, 'Tỷ lệ dương tính giả', 'False-positive rate')} value="18.4" unit="%"
+          meta={t(lang, 'ngành thường 90%+', 'industry 90%+')} metaTone="u" />
+        <KpiTile label={t(lang, 'Thời gian xử lý TB', 'Avg handling time')} value="6.2" unit="h"
+          meta="−64%" metaTone="u" />
       </div>
 
+      <div className="grid g-3-2" style={{ marginBottom: 14 }}>
       <DataTable
         id="aml" lang={lang} basePath={basePath} searchParams={searchParams}
-        title={t(lang, 'Cảnh báo AML', 'AML alerts')} rows={rows} pageSize={14}
+        title={t(lang, 'Cảnh báo giám sát', 'Surveillance alerts')} rows={rows} pageSize={14}
         searchPlaceholder={t(lang, 'Tìm mã, thành viên…', 'Search reference, member…')}
         search={(r) => `${r.id} ${r.member} ${r.typeVi} ${r.typeEn}`}
         filters={[
@@ -343,9 +393,112 @@ export async function AmlPage({ lang, basePath, searchParams }: RoutePageProps) 
           },
         ]}
       />
+        <div className="stack">
+          <Card title={t(lang, 'Ranh giới quyết định', 'Decision boundary')}
+            right={<TierPill tier={3} lang={lang} />} bodyStyle={{ padding: 11 }}>
+            {AML_BOUNDARY.map(([vi, en, color, items]) => (
+              <div key={en} style={{ marginBottom: 10 }}>
+                <b style={{ fontSize: 12, color }}>{t(lang, vi, en)}</b>
+                {items.map(([iVi, iEn]) => (
+                  <div key={iEn} style={{ display: 'flex', gap: 7, fontSize: 11.5, padding: '3px 0', color: 'var(--text-2)' }}>
+                    <span style={{ color }}>{color === 'var(--up)' ? '✓' : '!'}</span>
+                    <span>{t(lang, iVi, iEn)}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+            <div className="note">
+              {t(lang,
+                'Mức L3 theo phân tầng tự chủ §7.4: hệ thống không được tự quyết. Mọi quyết định lưu decision trace gồm dữ liệu đầu vào đã rút gọn, phiên bản mô hình, người duyệt và nội dung ghi đè.',
+                'Tier L3 under the §7.4 autonomy ladder: the system may not decide. Every decision writes a trace with the reduced input, model version, approver and any override.')}
+            </div>
+          </Card>
+
+          <Card title={t(lang, 'Phân bố cảnh báo theo loại', 'Alerts by type')}>
+            {byType.map((x) => (
+              <div key={x.k} className="between" style={{ padding: '5px 0' }}>
+                <span style={{ fontSize: 11.5, flex: 1 }}>{x.k}</span>
+                <div className="meter">
+                  <div className="bar" style={{ width: 80 }}>
+                    <i style={{ width: `${(x.v / byType[0].v) * 100}%`, background: 'var(--brand-500)' }} />
+                  </div>
+                  <b>{x.v}</b>
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
+      </div>
+
+      <Card
+        title={t(lang, 'Rà soát cấm vận & danh sách theo dõi', 'Sanctions & watchlist screening')}
+        right={
+          <span className="sub">
+            {t(lang, 'Rà soát lại toàn bộ thành viên mỗi 24 giờ và tại mọi giao dịch',
+              'Full member base rescreened every 24 hours and at every transaction')}
+          </span>
+        }>
+        <div className="grid g4">
+          {screening.map(([vi, en, value, dVi, dEn]) => (
+            <div key={en} style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-lg)', padding: 13 }}>
+              <div className="muted">{t(lang, vi, en)}</div>
+              <div className="num" style={{ fontSize: 20, fontWeight: 750, margin: '3px 0' }}>{value}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{t(lang, dVi, dEn)}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
     </>
   )
 }
+
+
+/** ui-2.html:3815 — the three dispute tiers, their SLA and how each is decided. */
+const DISPUTE_TIERS: Array<{
+  tier: 1 | 2 | 3
+  vi: string; en: string
+  slaVi: string; slaEn: string
+  bodyVi: string; bodyEn: string
+  color: string; bg: string
+}> = [
+  {
+    tier: 1, vi: 'Tầng 1 · Tự động', en: 'Tier 1 · Automated',
+    slaVi: '< 24h', slaEn: '< 24h',
+    bodyVi: 'Đối chiếu dữ liệu khách quan: AIS, TOS cảng, cân VGM, mốc chứng từ. Sai lệch rõ ràng được xử lý và bồi hoàn tự động theo biểu phạt đã công bố.',
+    bodyEn: 'Objective data reconciliation: AIS, port TOS, VGM weights, document timestamps. Clear-cut cases are settled and compensated automatically against the pre-published penalty schedule.',
+    color: 'var(--up)', bg: 'var(--up-bg)',
+  },
+  {
+    tier: 2, vi: 'Tầng 2 · Hoà giải nền tảng', en: 'Tier 2 · Platform mediation',
+    slaVi: '3–7 ngày', slaEn: '3–7 days',
+    bodyVi: 'Chuyên viên nền tảng chủ trì, hai bên nộp chứng cứ trên hệ thống. Phương án chia sẻ thiệt hại trở thành ràng buộc nếu cả hai chấp thuận.',
+    bodyEn: 'A platform officer mediates with evidence filed on-system. A loss-sharing proposal becomes binding if both sides accept.',
+    color: 'var(--gold-500)', bg: 'var(--gold-100)',
+  },
+  {
+    tier: 3, vi: 'Tầng 3 · Trọng tài', en: 'Tier 3 · Arbitration',
+    slaVi: '30–90 ngày', slaEn: '30–90 days',
+    bodyVi: 'Chuyển VIAC hoặc trọng tài hàng hải theo thoả thuận thành viên. Phán quyết được thi hành qua giải toả escrow và điều chỉnh hạn mức giao dịch.',
+    bodyEn: 'Referred to VIAC or maritime arbitration per the membership agreement. Awards are enforced through escrow release and trading-limit adjustment.',
+    color: 'var(--down)', bg: 'var(--down-bg)',
+  },
+]
+
+/** ui-2.html:3844 — published before any member trades, so most cases need no argument. */
+const PENALTY_SCHEDULE: Array<[string, string, string, string, string, string]> = [
+  ['Trễ tàu 1–3 ngày', 'Vessel delay 1–3 days', '2% giá cước', '2% of freight', 'AIS', 'AIS'],
+  ['Trễ tàu trên 3 ngày', 'Vessel delay over 3 days', '5% giá cước', '5% of freight', 'AIS', 'AIS'],
+  ['Không cấp chỗ đã cam kết', 'Failure to provide committed slot',
+    '8% + chênh giá thay thế', '8% + replacement cost', 'TOS + EDI', 'TOS + EDI'],
+  ['Sai lệch số lượng container', 'Container count discrepancy',
+    'Điều chỉnh theo thực tế', 'Adjusted to actual', 'TOS cảng', 'Port TOS'],
+  ['Phụ phí ngoài biểu giá công bố', 'Surcharge outside published tariff',
+    'Hoàn toàn bộ phần vượt', 'Full refund of excess', 'Bảng cước', 'Rate card'],
+  ['Chậm phát hành B/L trên 48 giờ', 'B/L issuance over 48h late',
+    '1% giá cước', '1% of freight', 'Mốc chứng từ', 'Doc timestamps'],
+  ['Sai lệch cân VGM', 'VGM weight discrepancy',
+    'Chi phí cân lại + phí xử lý', 'Re-weigh cost + handling', 'VGM', 'VGM'],
+]
 
 /** x_disp — 3-Tier Disputes (ui-2.html:3818). */
 export async function DisputePage({ lang, basePath, searchParams }: RoutePageProps) {
@@ -378,62 +531,64 @@ export async function DisputePage({ lang, basePath, searchParams }: RoutePagePro
     statusLabelMap(lang),
   ])
 
-  const tiers = [1, 2, 3].map((tier) => {
-    const group = rows.filter((r) => r.tier === tier)
-    return {
-      tier,
-      count: group.length,
-      resolved: group.filter((r) => r.status === 'resolved').length,
-      avgDays: group.reduce((a, r) => a + Number(r.days), 0) / (group.length || 1),
-      value: group.reduce((a, r) => a + Number(r.value), 0),
-    }
-  })
+  const open = rows.filter((r) => r.status === 'open')
+  const escrowHeld = open.reduce((a, r) => a + Number(r.value), 0)
+  const share = (tier: number) =>
+    Math.round((rows.filter((r) => r.tier === tier).length / rows.length) * 100)
 
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'Vận hành Nền tảng · Tuân thủ', 'Platform Operations · Compliance')}
-        title={t(lang, 'Tranh chấp 3 tầng', '3-Tier Disputes')}
+        crumb={t(lang, 'Vận hành nền tảng · Tuân thủ', 'Platform ops · Compliance')}
+        title={t(lang, 'Tranh chấp 3 tầng', 'Three-Tier Disputes')}
+        added
         sub={t(lang,
-          'Tầng 1 tự phân xử từ bằng chứng khách quan (AIS, TOS cảng, VGM, mốc chứng từ). Tầng 2 hòa giải có người điều phối. Tầng 3 chuyển trọng tài bên ngoài.',
-          'Tier 1 adjudicates automatically from objective evidence (AIS, port TOS, VGM, document timestamps). Tier 2 is facilitated mediation. Tier 3 escalates to external arbitration.')}
+          'Phần lớn tranh chấp được phán quyết bằng dữ liệu khách quan trong 24 giờ theo biểu phạt công bố trước. Escrow tự động giữ tiền phần tranh chấp cho tới khi xử lý xong.',
+          'Most disputes are adjudicated from objective data within 24 hours against a pre-published penalty schedule. Escrow automatically holds the disputed amount until resolution.')}
+        actions={<span className="btn">⬇ {t(lang, 'Xuất báo cáo', 'Export')}</span>}
       />
 
-      <div className="grid g4" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Tổng tranh chấp', 'Total disputes')} value={num(rows.length)}
-          meta={t(lang, `${num(rows.filter((r) => r.status === 'resolved').length)} đã xử lý`, `${num(rows.filter((r) => r.status === 'resolved').length)} resolved`)} metaTone="u" />
-        <KpiTile label={t(lang, 'Đang mở', 'Open')} value={num(rows.filter((r) => r.status === 'open').length)} metaTone="gd" />
-        <KpiTile label={t(lang, 'Đã chuyển tầng', 'Escalated')} value={num(rows.filter((r) => r.status === 'escalated').length)} metaTone="d" />
-        <KpiTile label={t(lang, 'Giá trị tranh chấp', 'Disputed value')}
-          value={usd(rows.reduce((a, r) => a + Number(r.value), 0))} />
+      <div className="grid g5" style={{ marginBottom: 14 }}>
+        <KpiTile label={t(lang, 'Tổng tranh chấp 12T', 'Total disputes 12M')} value={num(rows.length)}
+          meta={t(lang, 'tỷ lệ 1,4% giao dịch', '1.4% of transactions')} metaTone="u" />
+        <KpiTile label={t(lang, 'Xử lý tự động (Tầng 1)', 'Auto-resolved (Tier 1)')} value={num(share(1))}
+          unit="%" meta={t(lang, 'trong dưới 24 giờ', 'within 24 hours')} metaTone="u" />
+        <KpiTile label={t(lang, 'Thời gian xử lý TB', 'Avg resolution time')} value="2.1"
+          unit={t(lang, 'ngày', 'days')} meta={t(lang, 'SLA 7 ngày', 'SLA 7 days')} metaTone="u" />
+        <KpiTile label={t(lang, 'Giá trị đang giữ escrow', 'Value held in escrow')}
+          value={`${usd(Math.round(escrowHeld / 1000))}K`}
+          meta={t(lang, `${num(open.length)} vụ đang mở`, `${num(open.length)} open cases`)} metaTone="gd" />
+        <KpiTile label={t(lang, 'Tỷ lệ thực hiện hợp đồng', 'Contract performance')} value="98.6"
+          unit="%" meta="+0,4 pp" metaTone="u" />
       </div>
 
       <div className="grid g3" style={{ marginBottom: 14 }}>
-        {tiers.map((x) => (
-          <Card key={x.tier} title={t(lang, `Tầng ${x.tier}`, `Tier ${x.tier}`)}>
-            <div className="between" style={{ marginBottom: 8 }}>
-              <div>
-                <b className="num" style={{ fontSize: 24 }}>{num(x.count)}</b>
-                <div className="muted">{t(lang, 'hồ sơ', 'cases')}</div>
+        {DISPUTE_TIERS.map((ty) => (
+          <div className="card" key={ty.tier}>
+            <div className="card-h" style={{ background: ty.bg }}>
+              <h3>{t(lang, ty.vi, ty.en)}</h3>
+              <Tag tone="n">{t(lang, ty.slaVi, ty.slaEn)}</Tag>
+            </div>
+            <div className="card-b">
+              <div className="between">
+                <span className="muted">{t(lang, 'Tỷ lệ vụ việc', 'Share of cases')}</span>
+                <b className="num" style={{ fontSize: 22, color: ty.color }}>{share(ty.tier)}%</b>
               </div>
-              <div style={{ textAlign: 'right' }}>
-                <b className="num" style={{ fontSize: 15 }}>{num(x.avgDays, 1)}</b>
-                <div className="muted">{t(lang, 'ngày trung bình', 'avg days')}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 8 }}>
+                {t(lang, ty.bodyVi, ty.bodyEn)}
+              </div>
+              <div style={{ marginTop: 9, paddingTop: 9, borderTop: '1px dashed var(--line)' }}>
+                <TierPill tier={ty.tier} lang={lang} />
               </div>
             </div>
-            <Meter value={(x.resolved / (x.count || 1)) * 100} width={140} />
-            <div className="muted" style={{ marginTop: 6 }}>
-              {x.tier === 1 && t(lang, 'Tự phân xử theo bằng chứng khách quan', 'Auto-adjudicated from objective evidence')}
-              {x.tier === 2 && t(lang, 'Hòa giải có người điều phối', 'Facilitated mediation')}
-              {x.tier === 3 && t(lang, 'Trọng tài bên ngoài', 'External arbitration')}
-            </div>
-          </Card>
+          </div>
         ))}
       </div>
 
+      <div className="grid g-3-2">
       <DataTable
         id="disp" lang={lang} basePath={basePath} searchParams={searchParams}
-        title={t(lang, 'Hồ sơ tranh chấp', 'Dispute cases')} rows={rows} pageSize={14}
+        title={t(lang, 'Sổ tranh chấp', 'Dispute register')} rows={rows} pageSize={14}
         searchPlaceholder={t(lang, 'Tìm mã, lô hàng, bên liên quan…', 'Search reference, shipment, party…')}
         search={(r) => `${r.id} ${r.shipment} ${r.claimant} ${r.respondent}`}
         filters={[
@@ -497,6 +652,49 @@ export async function DisputePage({ lang, basePath, searchParams }: RoutePagePro
           },
         ]}
       />
+        <div className="stack">
+          <Card title={t(lang, 'Biểu phạt công bố trước', 'Pre-published penalty schedule')}
+            bodyStyle={{ padding: 11 }}>
+            {PENALTY_SCHEDULE.map(([vi, en, pVi, pEn, sVi, sEn]) => (
+              <div key={en} className="between" style={{ padding: '7px 0', borderBottom: '1px dashed var(--line)' }}>
+                <div style={{ flex: 1 }}>
+                  <b style={{ fontSize: 11.5 }}>{t(lang, vi, en)}</b>
+                  <div className="muted">{t(lang, 'Nguồn dữ liệu', 'Data source')}: {t(lang, sVi, sEn)}</div>
+                </div>
+                <b style={{ fontSize: 11.5, color: 'var(--down)', textAlign: 'right', maxWidth: 110 }}>
+                  {t(lang, pVi, pEn)}
+                </b>
+              </div>
+            ))}
+            <div className="note">
+              {t(lang,
+                'Biểu phạt được công bố trong Quy tắc nền tảng trước khi thành viên giao dịch. Vì phán quyết dựa trên dữ liệu khách quan mà cả hai bên đều thấy, phần lớn vụ việc không cần tranh luận.',
+                'The schedule is published in the Platform Rules before any member trades. Because adjudication rests on objective data both sides can see, most cases need no argument.')}
+            </div>
+          </Card>
+
+          <Card title={t(lang, 'Vì sao cơ chế này quan trọng', 'Why this matters')}>
+            <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.65 }}>
+              {t(lang,
+                'Khi tàu trễ làm chủ hàng mất hợp đồng, nếu nền tảng không phán quyết nhanh và không giữ được tiền, chủ hàng sẽ quay lại làm việc trực tiếp với hãng tàu — và không quay lại nữa. ',
+                'When a delay costs a shipper their contract, a platform that cannot adjudicate quickly and cannot hold the money loses that shipper back to direct carrier dealing — permanently. ')}
+              <b>{t(lang, 'Đây là nơi các marketplace thường chết.', 'This is where marketplaces usually die.')}</b>{' '}
+              {t(lang,
+                'Lợi thế của nền tảng này là nó đã nắm dữ liệu AIS, TOS cảng và mốc chứng từ, nên có thể phán quyết trên dữ kiện khách quan thay vì lời khai.',
+                'This platform’s advantage is that it already holds AIS, port TOS and document timestamps, so it can adjudicate on objective fact rather than testimony.')}
+            </div>
+            <div className="note" style={{ background: 'var(--up-bg)', marginTop: 11 }}>
+              <b style={{ color: 'var(--up)' }}>
+                {t(lang, 'Escrow là công cụ thi hành', 'Escrow is the enforcement tool')}
+              </b><br />
+              {t(lang,
+                'Khoản tiền tranh chấp bị tách và giữ tự động tại tài khoản escrow của ngân hàng. Bên bị thiệt hại không phải đi đòi nợ; bên bị khiếu nại không bị giữ toàn bộ khoản quyết toán.',
+                'The disputed amount is separated and held automatically in the bank escrow account. The injured party never has to chase payment; the respondent does not have their entire settlement withheld.')}
+            </div>
+          </Card>
+        </div>
+      </div>
     </>
   )
 }
+

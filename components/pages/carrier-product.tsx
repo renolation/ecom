@@ -461,6 +461,7 @@ function FlatCatalogue({
       id="prod" lang={lang} basePath={basePath} searchParams={searchParams}
       title={t(lang, 'Toàn bộ danh mục — dạng bảng', 'The whole catalogue — flat view')}
       rows={all} pageSize={12}
+      rowHref={(p) => modalHref(basePath, searchParams, p.id)}
       searchPlaceholder={t(lang, 'Tìm tên sản phẩm, tuyến, đối tác, đơn vị tính…', 'Search product, lane, partner, unit…')}
       search={(p) => `${p.id} ${p.name} ${p.laneCode ?? ''} ${p.siteName ?? ''} ${p.partnerName ?? ''} ${p.unit}`}
       filters={[
@@ -482,13 +483,13 @@ function FlatCatalogue({
         {
           key: 'name', header: t(lang, 'Sản phẩm', 'Product'), width: '26%', sortValue: (p) => p.name,
           render: (p) => (
-            <Link href={modalHref(basePath, searchParams, p.id)} scroll={false} className="flex" style={{ gap: 8 }}>
+            <div className="flex" style={{ gap: 8 }}>
               <span style={{ fontSize: 14 }}>{p.groupIcon}</span>
               <div>
                 <b style={{ fontSize: 11.5 }}>{p.name}</b>
                 <div className="muted">{p.id} · {p.groupName}{p.partnerName ? ` · ${p.partnerName}` : ''}</div>
               </div>
-            </Link>
+            </div>
           ),
         },
         {

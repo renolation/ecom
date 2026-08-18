@@ -5,7 +5,7 @@ import type { Tone } from '@/lib/queries/home-types'
 
 /** Page header — the prototype's `ph()` (ui-2.html:1152). */
 export function PageHeader({
-  crumb, title, sub, modules, sandbox, actions,
+  crumb, title, sub, modules, sandbox, actions, added, lang,
 }: {
   crumb: string
   title: string
@@ -13,6 +13,9 @@ export function PageHeader({
   modules?: string[]
   sandbox?: string[]
   actions?: ReactNode
+  /** Marks a screen the prototype flags as beyond the original programme scope. */
+  added?: boolean
+  lang?: Lang
 }) {
   return (
     <div className="ph">
@@ -22,6 +25,7 @@ export function PageHeader({
           {title}
           {modules?.map((m) => <span key={m} className="mod">{m}</span>)}
           {sandbox?.map((s) => <span key={s} className="mod sb">{s}</span>)}
+          {added ? <span className="mod ph">{t(lang ?? 'vi', 'BỔ SUNG', 'ADDED')}</span> : null}
         </h1>
         {sub ? <p className="ph-sub">{sub}</p> : null}
       </div>

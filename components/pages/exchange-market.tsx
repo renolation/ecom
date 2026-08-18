@@ -12,6 +12,9 @@ import { statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
 import type { RoutePageProps } from './page-props'
 
+const tone = (labels: Map<string, { label: string; tone: string }>, code: string): Tone =>
+  (labels.get(code)?.tone ?? 'n') as Tone
+
 /** x_index — VLX Index (ui-2.html:3521). */
 export async function IndexPage({ lang, basePath, searchParams }: RoutePageProps) {
   const [series, laneStats, lanePoints] = await Promise.all([
@@ -125,6 +128,42 @@ export async function IndexPage({ lang, basePath, searchParams }: RoutePageProps
   )
 }
 
+/** ui-2.html:3597 — corridor P&L, in bn VND, cumulative since opening. */
+const CORRIDOR_PL: Array<[string, string, number[], 'rev' | 'cost' | 'sub' | 'tot']> = [
+  ['Doanh thu phí booking', 'Booking fee revenue', [0.34, 0.25, 0.22], 'rev'],
+  ['Doanh thu origination tài trợ', 'Financing origination', [0.62, 0.41, 0.48], 'rev'],
+  ['Doanh thu chứng từ / eB/L', 'Document / eB/L revenue', [0.18, 0.12, 0.09], 'rev'],
+  ['Thuê bao & dữ liệu', 'Subscription & data', [0.28, 0.19, 0.11], 'rev'],
+  ['Tổng doanh thu', 'Total revenue', [1.42, 0.97, 0.90], 'sub'],
+  ['Chi phí kích hoạt (khuyến mãi)', 'Activation spend (incentives)', [-0.86, -0.94, -1.42], 'cost'],
+  ['Chi phí tích hợp đối tác', 'Partner integration cost', [-0.42, -0.58, -0.86], 'cost'],
+  ['Chi phí vận hành hành lang', 'Corridor operating cost', [-0.56, -0.63, -0.68], 'cost'],
+  ['P&L hành lang', 'Corridor P&L', [-0.42, -1.18, -2.06], 'tot'],
+]
+
+/** ui-2.html:3620 — the four decisions available at the new-corridor gate. */
+const CORRIDOR_GATES: Array<[string, string, string, string, string, string, string]> = [
+  ['Mở chiến dịch', 'Open campaign',
+    'Có đủ nguồn cung, quy tắc chiến dịch, chống lạm dụng, chủ sở hữu, cap và dashboard',
+    'Sufficient supply, campaign rules, anti-abuse, an owner, caps and a dashboard',
+    'Chạy thử có cap', 'Run a capped pilot', 'var(--up)'],
+  ['Mở rộng', 'Expand',
+    'Đạt tỷ lệ kích hoạt, phủ báo giá, lặp lại và chi phí/lặp lại trong ngưỡng',
+    'Activation, quote coverage, repeat and cost-per-repeat within thresholds',
+    'Tăng cap và mở tuyến kế tiếp', 'Raise the cap and open the next lane', 'var(--brand-500)'],
+  ['Điều chỉnh', 'Adjust',
+    'Có giao dịch nhưng tỷ lệ chuyển đổi thấp hoặc ma sát rõ',
+    'Transactions occur but conversion is low or friction is evident',
+    'Sửa thông điệp, giá và luồng', 'Fix messaging, pricing and the flow', 'var(--gold-500)'],
+  ['Dừng', 'Stop',
+    'Vượt cap 2 kỳ, giao dịch ảo, nguồn cung yếu hoặc không tạo lặp lại',
+    'Over cap for 2 periods, fake volume, weak supply or no repeat',
+    'Khoá ưu đãi và đánh giá lại nguồn cung', 'Freeze incentives and reassess supply', 'var(--down)'],
+]
+
+/** ui-2.html:3577 — the corridor leads are named in the prototype, not in any table. */
+const CORRIDOR_LEADS = ['Trần Hải Long', 'Phạm Thu Hà', 'Nguyễn Văn Đức']
+
 /** x_corridor — Corridors & P&L (ui-2.html:3587). */
 export async function CorridorPage({ lang }: RoutePageProps) {
   const [rows, laneRows, memberCounts] = await Promise.all([
@@ -138,100 +177,191 @@ export async function CorridorPage({ lang }: RoutePageProps) {
   ])
 
   const labels = await statusLabelMap(lang)
-  const totalTeu = rows.reduce((a, r) => a + r.teu, 0)
-  const totalGmv = rows.reduce((a, r) => a + Number(r.gmvMVnd), 0)
-  const weightedPl = rows.reduce((a, r) => a + Number(r.pl) * r.teu, 0) / totalTeu
+
+  /** ui-2.html:3569 — five expansion gates; all five must pass to open the next corridor. */
+  const gatesOf = (c: typeof rows[number]): Array<[string, boolean]> => [
+    [t(lang, '≥3 nhà cung cấp / tuyến', '≥3 providers per lane'), c.suppliers >= 9],
+    [t(lang, '30–50 chủ hàng mục tiêu', '30–50 target shippers'), c.shippers >= 30],
+    [t(lang, 'Tỷ lệ ≥3 báo giá ≥70%', '≥3-quote rate ≥70%'), c.quality >= 70],
+    [t(lang, 'Thời gian báo giá đầu ≤4 giờ', 'Time to first quote ≤4h'), Number(c.timeToQuote) <= 4],
+    [t(lang, 'Lặp lại 90 ngày ≥50%', '90-day repeat ≥50%'), c.repeatRate >= 50],
+  ]
 
   return (
     <>
       <PageHeader
-        crumb={t(lang, 'Vận hành Nền tảng · Thị trường', 'Platform Operations · Market')}
+        crumb={t(lang, 'Vận hành nền tảng · Thị trường', 'Platform ops · Market')}
         title={t(lang, 'Hành lang & P&L', 'Corridors & P&L')}
+        added
+        lang={lang}
         sub={t(lang,
-          'Ba hành lang thí điểm theo đề án. Mỗi hành lang được đo bằng thanh khoản hai chiều, chất lượng khớp lệnh và lãi lỗ đơn vị.',
-          'The three pilot corridors. Each is measured on two-sided liquidity, match quality and unit economics.')}
+          'Mỗi hành lang được vận hành như một micro-market có P&L riêng và một Corridor Lead chịu trách nhiệm. Chỉ mở hành lang tiếp theo khi hành lang hiện tại đạt ngưỡng.',
+          'Each corridor runs as a micro-market with its own P&L and an accountable Corridor Lead. The next corridor opens only when the current one clears its thresholds.')}
+        actions={<span className="btn">⬇ {t(lang, 'Xuất báo cáo', 'Export')}</span>}
       />
 
-      <div className="grid g4" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Hành lang', 'Corridors')} value={num(rows.length)}
-          meta={t(lang, `${num(rows.filter((r) => r.statusCode === 'live').length)} đang chạy`, `${num(rows.filter((r) => r.statusCode === 'live').length)} live`)} />
-        <KpiTile label={t(lang, 'TEU luỹ kế', 'Cumulative TEU')} value={num(totalTeu)} />
-        <KpiTile label="GMV" value={num(totalGmv / 1000, 1)} unit={t(lang, 'tỷ đ', 'bn VND')} />
-        <KpiTile label={t(lang, 'P&L đơn vị bình quân', 'Weighted unit P&L')} value={num(weightedPl, 2)}
-          meta={t(lang, 'trên mỗi TEU', 'per TEU')} metaTone={weightedPl >= 0 ? 'u' : 'd'} />
-      </div>
-
-      <div className="stack">
+      <div className="grid g3" style={{ marginBottom: 14 }}>
         {rows.map((c) => {
-          const cLanes = laneRows.filter((l) => l.corridorId === c.id)
-          const mCount = memberCounts.find((m) => m.corridorId === c.id)?.n ?? 0
+          const gates = gatesOf(c)
+          const passed = gates.filter(([, ok]) => ok).length
+          const live = c.statusCode === 'live'
+          const pl = Number(c.pl)
           return (
-            <Card key={c.id}>
-              <div className="between" style={{ alignItems: 'flex-start', marginBottom: 12 }}>
-                <div>
-                  <div className="flex" style={{ gap: 8 }}>
-                    <b style={{ fontSize: 15 }}>{lang === 'vi' ? c.nameVi : c.nameEn}</b>
-                    <Tag tone={(labels.get(c.statusCode)?.tone ?? 'n') as Tone}>
-                      {labels.get(c.statusCode)?.label ?? c.statusCode}
-                    </Tag>
-                  </div>
-                  <div className="muted" style={{ marginTop: 3 }}>{c.route}</div>
-                  <p style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 6, maxWidth: 620 }}>
-                    {lang === 'vi' ? c.useCaseVi : c.useCaseEn}
-                  </p>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div className="muted">{t(lang, 'P&L đơn vị', 'Unit P&L')}</div>
-                  <b className="num" style={{ fontSize: 20, color: Number(c.pl) >= 0 ? 'var(--up)' : 'var(--down)' }}>
-                    {num(c.pl, 2)}
-                  </b>
-                </div>
+            <div className="card" key={c.id}>
+              <div className="card-h" style={{ background: live ? 'var(--up-bg)' : 'var(--gold-100)' }}>
+                <h3>
+                  {t(lang, 'Hành lang', 'Corridor')} {String(c.id).padStart(2, '0')} ·{' '}
+                  {lang === 'vi' ? c.nameVi : c.nameEn}
+                </h3>
+                <Tag tone={tone(labels, c.statusCode)}>{labels.get(c.statusCode)?.label ?? c.statusCode}</Tag>
               </div>
-
-              <div className="grid g5" style={{ gap: 10, marginBottom: 12 }}>
-                {[
-                  [t(lang, 'Nhà cung cấp', 'Suppliers'), num(c.suppliers)],
-                  [t(lang, 'Chủ hàng', 'Shippers'), num(c.shippers)],
-                  [t(lang, 'Thành viên', 'Members'), num(mCount)],
-                  ['TEU', num(c.teu)],
-                  ['GMV', `${num(Number(c.gmvMVnd) / 1000, 1)} ${t(lang, 'tỷ', 'bn')}`],
-                ].map(([label, value]) => (
-                  <div key={label} style={{ padding: 9, background: 'var(--surface-2)', borderRadius: 9 }}>
-                    <div className="muted">{label}</div>
-                    <b className="num" style={{ fontSize: 15 }}>{value}</b>
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid g2" style={{ gap: 12 }}>
-                <div>
-                  <div className="muted" style={{ marginBottom: 4 }}>{t(lang, 'Chất lượng khớp lệnh', 'Match quality')}</div>
-                  <Meter value={c.quality} width={140} />
-                  <div className="muted" style={{ marginTop: 6 }}>
-                    {t(lang, 'Thời gian ra báo giá', 'Time to quote')}: <b className="num">{num(c.timeToQuote, 1)}h</b>
-                    {' · '}
-                    {t(lang, 'Khách quay lại', 'Repeat rate')}: <b className="num">{c.repeatRate}%</b>
-                  </div>
-                </div>
-                <div>
-                  <div className="muted" style={{ marginBottom: 4 }}>{t(lang, 'Tuyến trong hành lang', 'Lanes in corridor')}</div>
-                  {cLanes.map((l) => (
-                    <div key={l.code} className="between" style={{ padding: '4px 0', borderBottom: '1px dashed var(--line)' }}>
-                      <b style={{ fontSize: 11.5 }}>{l.code}</b>
-                      <span>
-                        <span className="num">{usd(l.price)}</span>
-                        <span className="tag" style={{ marginLeft: 6 }}
-                          data-tone={Number(l.change) >= 0 ? 'u' : 'd'}>
-                          <span style={{ color: Number(l.change) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(l.change)}</span>
-                        </span>
-                      </span>
+              <div className="card-b">
+                <div className="muted">{c.route}</div>
+                <div className="grid g2" style={{ gap: 9, marginTop: 10 }}>
+                  {([
+                    [t(lang, 'TEU luỹ kế', 'Cumulative TEU'), num(c.teu)],
+                    ['GMV', `${num(Number(c.gmvMVnd) / 1000, 1)} ${t(lang, 'tỷ', 'bn')}`],
+                    [t(lang, 'Chủ hàng hoạt động', 'Active shippers'), String(c.shippers)],
+                    [t(lang, 'Nhà cung cấp', 'Providers'), String(c.suppliers)],
+                  ] as Array<[string, string]>).map(([label, value]) => (
+                    <div key={label} style={{ border: '1px solid var(--line)', borderRadius: 'var(--r)', padding: 9 }}>
+                      <div className="muted">{label}</div>
+                      <div className="num" style={{ fontSize: 15, fontWeight: 750 }}>{value}</div>
                     </div>
                   ))}
                 </div>
+                <div className="sep" />
+                <div className="between">
+                  <b style={{ fontSize: 12 }}>{t(lang, 'Điều kiện mở rộng', 'Expansion gates')}</b>
+                  <Tag tone={passed === 5 ? 'u' : passed >= 3 ? 'gd' : 'd'}>{passed}/5</Tag>
+                </div>
+                {gates.map(([label, ok]) => (
+                  <div key={label} className="between" style={{ padding: '4px 0', fontSize: 11.5 }}>
+                    <span>{label}</span>
+                    <span style={{ color: ok ? 'var(--up)' : 'var(--down)', fontWeight: 700 }}>{ok ? '✓' : '✕'}</span>
+                  </div>
+                ))}
+                <div className="between" style={{
+                  background: pl < -1.5 ? 'var(--down-bg)' : 'var(--surface-3)',
+                  borderRadius: 9, padding: 10, marginTop: 9,
+                }}>
+                  <b style={{ fontSize: 12 }}>{t(lang, 'P&L hành lang (luỹ kế)', 'Corridor P&L (cumulative)')}</b>
+                  <b className="num" style={{ fontSize: 15, color: pl < 0 ? 'var(--down)' : 'var(--up)' }}>
+                    {num(pl, 2)} {t(lang, 'tỷ', 'bn')}
+                  </b>
+                </div>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Corridor Lead: {CORRIDOR_LEADS[c.id - 1]}
+                </div>
               </div>
-            </Card>
+            </div>
           )
         })}
+      </div>
+
+      <div className="grid g-2-1" style={{ marginBottom: 14 }}>
+        <Card
+          title={t(lang, 'P&L chi tiết theo hành lang', 'Detailed corridor P&L')}
+          right={
+            <span className="sub">
+              {t(lang, 'Đơn vị: tỷ đồng · luỹ kế từ khi mở hành lang',
+                'Billion VND · cumulative since corridor opening')}
+            </span>
+          }
+          bodyStyle={{ padding: 0 }}
+          footer={t(lang,
+            'Hành lang 03 chưa đạt ngưỡng và đang lỗ sâu nhất — theo nguyên tắc §9.4, tuyến không đạt mật độ tối thiểu sau 2 chu kỳ thử nghiệm phải dừng ưu đãi và đánh giá lại nguồn cung.',
+            'Corridor 03 has not cleared its gates and carries the deepest loss — under §9.4, a lane below minimum density after two test cycles must pause subsidy and have its supply reassessed.')}>
+          <div className="tbl-wrap" style={{ maxHeight: 'none' }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t(lang, 'Khoản mục', 'Line item')}</th>
+                  {rows.map((c) => (
+                    <th key={c.id} className="r">{String(c.id).padStart(2, '0')}</th>
+                  ))}
+                  <th className="r">{t(lang, 'Tổng', 'Total')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {CORRIDOR_PL.map(([vi, en, values, kind]) => {
+                  const total = values.reduce((a, b) => a + b, 0)
+                  const rowStyle = kind === 'sub'
+                    ? { fontWeight: 700, background: 'var(--surface-2)' }
+                    : kind === 'tot'
+                      ? { fontWeight: 800, background: 'var(--surface-3)' }
+                      : undefined
+                  return (
+                    <tr key={en} style={rowStyle}>
+                      <td>{t(lang, vi, en)}</td>
+                      {values.map((v, i) => (
+                        <td key={i} className="r num" style={{
+                          color: v < 0 ? 'var(--down)'
+                            : kind === 'rev' || kind === 'sub' ? 'var(--up)' : 'inherit',
+                        }}>{num(v, 2)}</td>
+                      ))}
+                      <td className="r num" style={{ fontWeight: 700, color: total < 0 ? 'var(--down)' : 'var(--up)' }}>
+                        {num(total, 2)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <div className="stack">
+          <Card title={t(lang, 'Chỉ số chất lượng thị trường', 'Market quality metrics')}>
+            {rows.map((c) => {
+              // Time-to-quote is inverted onto a 0–100 scale so a shorter wait reads as fuller.
+              const ttqScore = Math.round(100 - Number(c.timeToQuote) * 12)
+              const metrics: Array<[string, number, number, string]> = [
+                [t(lang, 'Tỷ lệ ≥3 báo giá', '≥3-quote rate'), c.quality, 70, `${c.quality}%`],
+                [t(lang, 'Lặp lại 90 ngày', '90-day repeat'), c.repeatRate, 50, `${c.repeatRate}%`],
+                [t(lang, 'Thời gian báo giá đầu (giờ)', 'Time to first quote (h)'), ttqScore, 100,
+                  `${num(c.timeToQuote, 1)}h`],
+              ]
+              return (
+                <div key={c.id} style={{ marginBottom: 13 }}>
+                  <b style={{ fontSize: 12.5 }}>
+                    {String(c.id).padStart(2, '0')} · {lang === 'vi' ? c.nameVi : c.nameEn}
+                  </b>
+                  {metrics.map(([label, value, threshold, display]) => (
+                    <div key={label} className="between" style={{ padding: '3px 0', fontSize: 11.5 }}>
+                      <span>{label}</span>
+                      <div className="meter">
+                        <div className="bar" style={{ width: 70 }}>
+                          <i style={{
+                            width: `${Math.min(100, value)}%`,
+                            background: value >= threshold ? 'var(--up)' : 'var(--down)',
+                          }} />
+                        </div>
+                        <b>{display}</b>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </Card>
+
+          <Card title={t(lang, 'Cửa phê duyệt mở hành lang mới', 'New-corridor approval gate')}
+            bodyStyle={{ padding: 11 }}>
+            {CORRIDOR_GATES.map(([vi, en, cVi, cEn, aVi, aEn, color]) => (
+              <div key={en} style={{
+                borderLeft: `3px solid ${color}`, padding: '9px 11px',
+                background: 'var(--surface-2)', borderRadius: '0 9px 9px 0', marginBottom: 8,
+              }}>
+                <b style={{ fontSize: 12 }}>{t(lang, vi, en)}</b>
+                <div className="muted" style={{ marginTop: 2 }}>{t(lang, cVi, cEn)}</div>
+                <div style={{ fontSize: 11, fontWeight: 650, color: 'var(--brand-600)', marginTop: 4 }}>
+                  → {t(lang, aVi, aEn)}
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
       </div>
     </>
   )
