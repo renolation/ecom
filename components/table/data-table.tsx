@@ -14,7 +14,7 @@ import {
  */
 export function DataTable<T>({
   id, title, rows, columns, filters, search, pageSize = 14, lang,
-  basePath, searchParams, actions, searchPlaceholder, empty,
+  basePath, searchParams, actions, searchPlaceholder, empty, rowHref,
 }: {
   id: string
   title: string
@@ -29,6 +29,8 @@ export function DataTable<T>({
   actions?: ReactNode
   searchPlaceholder?: string
   empty?: string
+  /** When set, the whole row links to this href — the prototype's `onRow`. */
+  rowHref?: (row: T) => string
 }) {
   const state = readTableState(id, searchParams)
   const { page, total, pages, pageIndex, from } = applyTableState(rows, state, {
@@ -108,14 +110,24 @@ export function DataTable<T>({
                   {empty ?? t(lang, 'Không có bản ghi phù hợp', 'No matching records')}
                 </td>
               </tr>
-            ) : page.map((row, i) => (
-              // eslint-disable-next-line react/no-array-index-key
-              <tr key={from + i}>
-                {columns.map((c) => (
-                  <td key={c.key} className={c.cls}>{c.render(row, from + i)}</td>
-                ))}
-              </tr>
-            ))}
+            ) : page.map((row, i) => {
+              const href = rowHref?.(row)
+              return (
+                // eslint-disable-next-line react/no-array-index-key
+                <tr key={from + i} className={href ? 'row-link' : undefined}>
+                  {columns.map((c, ci) => (
+                    <td key={c.key} className={c.cls}>
+                      {/* One overlay link per row: it sits in the first cell and covers
+                          the row, so the whole row is clickable without nesting anchors. */}
+                      {href && ci === 0 ? (
+                        <Link href={href} className="row-link-hit" aria-label={t(lang, 'Mở chi tiết', 'Open details')} scroll={false} />
+                      ) : null}
+                      {c.render(row, from + i)}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

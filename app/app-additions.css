@@ -96,3 +96,10 @@
 
 /* Tree rows are links (they change URL state), so the anchor must lay out as a row. */
 .tr-r { text-decoration: none; color: inherit; }
+
+/* Clickable table rows: an absolutely-positioned link covers the row. */
+.tbl tr.row-link { position: relative; cursor: pointer; }
+.tbl tr.row-link:hover { background: var(--surface-2); }
+.tbl tr.row-link td:first-child { position: static; }
+.row-link-hit { position: absolute; inset: 0; z-index: 1; }
+.tbl tr.row-link td > *:not(.row-link-hit) { position: relative; z-index: 2; }

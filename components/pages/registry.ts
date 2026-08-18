@@ -1,7 +1,8 @@
 import type { RoutePage } from './page-props'
 import {
-  CarrierSettlementPage, FleetPage, ProductPage,
+  CarrierSettlementPage, FleetPage,
 } from './carrier-assets'
+import { ProductPage } from './carrier-product'
 import {
   BidInboxPage, CapacityRatesPage, CarrierDashboardPage, VoyageOfferingPage,
 } from './carrier-supply'

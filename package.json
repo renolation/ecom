@@ -13,7 +13,8 @@
     "db:schema": "tsx db/tools/emit-schema.ts",
     "db:seed": "tsx db/tools/emit-seed.ts",
     "db:all": "pnpm db:generate && pnpm db:schema && pnpm db:seed",
-    "db:verify": "tsx db/tools/verify.ts"
+    "db:verify": "tsx db/tools/verify.ts",
+    "db:check": "tsx --env-file=.env db/tools/check-connection.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.38.3",
