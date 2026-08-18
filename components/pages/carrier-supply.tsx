@@ -506,6 +506,15 @@ export async function BidInboxPage({ lang, basePath, searchParams }: RoutePagePr
     carrierOptions(),
   ])
 
+  // Open invitations get a card each (ui-2.html:2655). Win probability and margin are
+  // random in the prototype; here they derive from the bid's own score and saving so
+  // the figures stay stable across renders.
+  const invitations = rows
+    .filter((r) => r.rfqStatus === 'open')
+    .filter((r, i, arr) => arr.findIndex((x) => x.rfq === r.rfq) === i)
+    .sort((a, b) => a.closesIn - b.closesIn)
+    .slice(0, 5)
+
   const leading = rows.filter((r) => r.status === 'lead')
   const onOpen = rows.filter((r) => r.rfqStatus === 'open')
   const allocated = rows.filter((r) => r.allocation !== '—')
@@ -531,6 +540,60 @@ export async function BidInboxPage({ lang, basePath, searchParams }: RoutePagePr
           meta={t(lang, 'có phần khối lượng', 'received volume')} metaTone="b" />
         <KpiTile label={t(lang, 'Điểm chấm bình quân', 'Average score')} value={num(avgScore, 1)}
           bar={avgScore} />
+      </div>
+
+      <div className="stack" style={{ marginBottom: 14 }}>
+        {invitations.map((q) => {
+          const winProb = Math.min(92, Math.max(28, q.score))
+          const estMargin = ((Number(q.indexPrice) - Number(q.price)) / Number(q.indexPrice)) * 100
+          return (
+            <div className="card" key={q.rfq}>
+              <div className="card-b">
+                <div className="bid-invite">
+                  <div>
+                    <div className="flex" style={{ gap: 7 }}>
+                      <b className="num" style={{ fontSize: 12.5 }}>{q.rfq}</b>
+                      <Tag tone={q.closesIn <= 2 ? 'd' : 'b'}>
+                        {q.closesIn <= 2 ? t(lang, 'Sắp đóng', 'Closing soon') : t(lang, 'Đang mở', 'Open')}
+                      </Tag>
+                    </div>
+                    <b style={{ fontSize: 13.5, display: 'block', marginTop: 3 }}>{q.shipper}</b>
+                    <div className="muted">
+                      {lang === 'vi' ? q.scopeVi : q.scopeEn} · {q.lane}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="muted">{t(lang, 'Còn lại', 'Time left')}</div>
+                    <div className="num" style={{
+                      fontSize: 15, fontWeight: 750,
+                      color: q.closesIn <= 2 ? 'var(--down)' : 'var(--text)',
+                    }}>
+                      {q.closesIn} {t(lang, 'ngày', 'days')}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="muted">{t(lang, 'Chỉ số / giá chào', 'Index / your bid')}</div>
+                    <div className="num" style={{ fontSize: 13 }}>
+                      {usd(q.indexPrice)} → <b style={{ color: 'var(--brand-600)' }}>{usd(q.price)}</b>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="muted">{t(lang, 'Khả năng thắng', 'Win probability')}</div>
+                    <Meter value={winProb} width={66}
+                      color={winProb > 60 ? 'var(--up)' : winProb > 45 ? 'var(--gold-500)' : 'var(--down)'} />
+                    <div className="muted">
+                      {t(lang, 'Biên LN dự kiến', 'Est. margin')} <b>{num(estMargin, 1)}%</b>
+                    </div>
+                  </div>
+                  <div className="flex" style={{ justifyContent: 'flex-end', gap: 6 }}>
+                    <span className="btn sm">{t(lang, 'Bỏ qua', 'Decline')}</span>
+                    <span className="btn p sm">{t(lang, 'Chào giá', 'Bid')}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       <DataTable

@@ -130,3 +130,14 @@
 }
 .hm-filter-menu a:hover { background: var(--surface-3); color: var(--text); }
 .hm-filter-menu a.on { background: var(--brand-100); color: var(--brand-600); font-weight: 700; }
+
+/* Bid invitation card: the prototype lays this out inline (ui-2.html:2656). */
+.bid-invite {
+  display: grid;
+  grid-template-columns: 1.5fr .8fr 1fr 1fr 200px;
+  gap: 15px;
+  align-items: center;
+}
+@media (max-width: 1100px) {
+  .bid-invite { grid-template-columns: 1fr 1fr; }
+}

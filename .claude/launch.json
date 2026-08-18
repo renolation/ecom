@@ -4,8 +4,11 @@
     {
       "name": "vlx-dev",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
-      "port": 4004
+      "runtimeArgs": [
+        "dev"
+      ],
+      "port": 3000,
+      "autoPort": false
     }
   ]
 }
