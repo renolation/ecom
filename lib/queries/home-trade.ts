@@ -1,4 +1,4 @@
-import { and, asc, avg, eq, gte, inArray, lt, lte, or, sql } from 'drizzle-orm'
+import { and, asc, avg, eq, gte, inArray, lt, lte, or, sql, sum } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { DATE_ANCHOR } from '@/db/schema/common'
 import { walk } from '@/components/charts'
@@ -137,74 +137,148 @@ export async function shipperHome(lang: Lang): Promise<HomeView> {
   }
 }
 
-/** Carrier / service provider — mirrors pageCHome (ui-2.html:1246). */
+/** c_home — Pacific Lines VN home (ui-2.html:1246). */
 export async function carrierHome(lang: Lang): Promise<HomeView> {
-  const [openTenders, attention, avgFill, unpublished, wonVoyages, idleAssets] = await Promise.all([
-    db.select({ n }).from(rfqs).where(eq(rfqs.statusCode, 'open')),
-    db.select({ n }).from(fleetAssets)
-      .where(or(lt(fleetAssets.certDays, 45), lt(fleetAssets.maintDueDays, 21))),
-    db.select({ v: avg(rateCards.fillPct) }).from(rateCards),
-    db.select({ n }).from(rateCards).where(eq(rateCards.published, false)),
-    db.select({ n }).from(voyages).where(eq(voyages.statusCode, 'won')),
-    db.select({ n }).from(fleetAssets).where(eq(fleetAssets.statusCode, 'idle')),
-  ])
+  const [lowFill, openTenders, closingSoon, draftVoyages, exceptions, pending, unsold] =
+    await Promise.all([
+      // Lane-weeks under 70% fill with the cut-off inside three weeks.
+      db.select({
+        lane: rateCards.laneCode,
+        week: rateCards.week,
+        remaining: rateCards.remaining,
+        fill: rateCards.fillPct,
+        daysOut: rateCards.daysOut,
+      }).from(rateCards)
+        .where(and(lt(rateCards.fillPct, 70), lte(rateCards.daysOut, 21)))
+        .orderBy(asc(rateCards.fillPct)),
+      db.select({ n }).from(rfqs).where(eq(rfqs.statusCode, 'open')),
+      db.select({ n }).from(rfqs).where(and(eq(rfqs.statusCode, 'open'), lte(rfqs.closesInDays, 2))),
+      db.select({ n }).from(voyages).where(eq(voyages.statusCode, 'draft')),
+      db.select({ n }).from(settlements).where(eq(settlements.statusCode, 'exception')),
+      db.select({ n }).from(settlements).where(eq(settlements.statusCode, 'pending')),
+      db.select({ v: sum(rateCards.remaining) }).from(rateCards),
+    ])
+
+  const unsoldTeu = Number(unsold[0]?.v ?? 0)
+  const closing = closingSoon[0]?.n ?? 0
+  const drafts = draftVoyages[0]?.n ?? 0
+  const excCount = exceptions[0]?.n ?? 0
+  const earlyCount = pending[0]?.n ?? 0
 
   return {
-    heroTitle: t(lang, 'Chào buổi chiều, Pacific Lines 👋', 'Good afternoon, Pacific Lines 👋'),
+    heroTitle: t(lang, 'Chào buổi chiều, Long 👋', 'Good afternoon, Long 👋'),
     heroSub: t(lang,
-      `Đối tác sáng lập — ${openTenders[0]?.n ?? 0} gói thầu đang mở và ${attention[0]?.n ?? 0} phương tiện cần chú ý.`,
-      `Founding partner — ${openTenders[0]?.n ?? 0} open tenders and ${attention[0]?.n ?? 0} assets need attention.`),
+      `Pacific Lines VN · Đối tác sáng lập — ${num(unsoldTeu)} TEU còn trống trong 13 tuần tới.`,
+      `Pacific Lines VN · Founding partner — ${num(unsoldTeu)} TEU unsold over the next 13 weeks.`),
     heroTags: [
-      t(lang, 'Hãng tàu / NCC dịch vụ', 'Carrier / Service Provider'),
-      t(lang, 'Pacific Lines VN', 'Pacific Lines VN'),
+      t(lang, 'Hãng tàu / NCC', 'Carrier / Provider'),
+      t(lang, '3 hành lang', '3 corridors'),
+      t(lang, 'Hạng tuân thủ: Tốt', 'Compliance: Good'),
     ],
     kpis: [
-      { label: t(lang, 'Lấp đầy trung bình', 'Average fill rate'),
-        value: num(avgFill[0]?.v ?? 0, 1), unit: '%', bar: Number(avgFill[0]?.v ?? 0) },
-      { label: t(lang, 'Hộp thầu đang mở', 'Open bid inbox'), value: num(openTenders[0]?.n ?? 0),
-        meta: t(lang, 'cần chào giá', 'awaiting your quote'), metaTone: 'gd' },
-      { label: t(lang, 'Phương tiện cần chú ý', 'Assets needing attention'), value: num(attention[0]?.n ?? 0),
-        meta: t(lang, 'chứng chỉ hoặc bảo dưỡng', 'certificates or maintenance'), metaTone: 'd' },
-      { label: t(lang, 'Chuyến đã chốt', 'Voyages won'), value: num(wonVoyages[0]?.n ?? 0),
-        meta: t(lang, 'trong danh mục chào giá', 'in the offering pipeline'), metaTone: 'u' },
-      { label: t(lang, 'Ô giá chưa công bố', 'Unpublished rate cells'), value: num(unpublished[0]?.n ?? 0),
-        meta: t(lang, 'trên bản đồ nhiệt', 'on the heatmap') },
+      {
+        label: t(lang, 'Chỗ còn trống', 'Unsold capacity'),
+        value: num(unsoldTeu), unit: 'TEU',
+        meta: t(lang, `${lowFill.length} tuyến-tuần dưới 70%`, `${lowFill.length} lane-weeks below 70%`),
+        metaTone: 'gd',
+      },
+      {
+        label: t(lang, 'Lời mời thầu đang mở', 'Open tender invitations'),
+        value: num(openTenders[0]?.n ?? 0),
+        meta: t(lang, `${closing} đóng trong 48 giờ`, `${closing} close within 48h`),
+        metaTone: 'd',
+      },
+      {
+        label: t(lang, 'Chuyến chưa chào giá', 'Voyages not yet quoted'),
+        value: num(drafts),
+        meta: t(lang, 'trợ lý AI đã có đề xuất', 'AI assistant has proposals'),
+        metaTone: 'b',
+      },
+      {
+        label: t(lang, 'Chờ thanh toán', 'Pending payout'),
+        value: '11.4', unit: t(lang, 'tỷ đ', 'bn VND'),
+        meta: t(lang, 'có thể nhận sớm trong 4 giờ', 'early payout within 4 hours'),
+        metaTone: 'gd',
+      },
+      {
+        label: t(lang, 'Tỷ lệ lấp đầy', 'Slot utilisation'),
+        value: '87.4', unit: '%', meta: '+6,1 pp', metaTone: 'u',
+        spark: walk(80, 20, 0.03, 9), sparkColor: 'var(--up)',
+      },
     ],
     todos: [
-      { icon: '📥',
-        title: t(lang, `${openTenders[0]?.n ?? 0} gói thầu đang chờ chào giá`, `Tenders awaiting your bid: ${openTenders[0]?.n ?? 0}`),
-        detail: t(lang, 'Chào giá trước khi đóng thầu để không mất lượt phân bổ khối lượng',
-          'Submit before close or lose the volume allocation round'),
-        route: 'c_bids', tone: 'd', badge: t(lang, 'Ưu tiên', 'Priority') },
-      { icon: '🚢',
-        title: t(lang, `${attention[0]?.n ?? 0} phương tiện sắp hết hạn chứng chỉ hoặc đến kỳ bảo dưỡng`,
-          `Assets with expiring certificates or due maintenance: ${attention[0]?.n ?? 0}`),
-        detail: t(lang, 'Chứng chỉ hết hạn sẽ chặn khai thác — đặt lịch đăng kiểm và lên đà sớm',
-          'An expired certificate blocks operation — schedule survey and dry-docking early'),
-        route: 'c_fleet', tone: 'd', badge: t(lang, 'Chặn khai thác', 'Blocks service') },
-      { icon: '🗂️',
-        title: t(lang, `${unpublished[0]?.n ?? 0} ô giá chưa công bố`, `Unpublished rate cells: ${unpublished[0]?.n ?? 0}`),
-        detail: t(lang, 'Giá chưa công bố không xuất hiện trong kết quả tìm kiếm của chủ hàng',
-          'Unpublished rates do not appear in shipper search results'),
-        route: 'c_inv', tone: 'gd', badge: t(lang, 'Mất hiển thị', 'Not visible') },
-      { icon: '⛴️',
-        title: t(lang, `${idleAssets[0]?.n ?? 0} phương tiện đang chờ việc`, `Assets currently idle: ${idleAssets[0]?.n ?? 0}`),
-        detail: t(lang, 'Cân nhắc chào chuyến hoặc cho thuê ngoài để giảm chi phí neo đậu',
-          'Consider offering a voyage or chartering out to reduce lay-up cost'),
-        route: 'c_offer', tone: 'b', badge: t(lang, 'Cơ hội', 'Opportunity') },
-      { icon: '🧾',
-        title: t(lang, 'Đối soát và thanh toán kỳ này', 'Reconciliation and payout this period'),
-        detail: t(lang, 'Khớp mốc giao hàng với lệnh chi để giải phóng escrow đúng hạn',
-          'Match delivery milestones to payment instructions so escrow releases on time'),
-        route: 'c_settle', tone: 'b', badge: t(lang, 'Theo dõi', 'Monitor') },
+      {
+        icon: '📥',
+        title: t(lang, `${closing} gói thầu đóng trong 48 giờ`, `Tenders closing within 48 hours: ${closing}`),
+        detail: t(lang,
+          'Chưa gửi chào giá — hệ thống đã ước tính giá thắng và biên lợi nhuận cho từng gói',
+          'No bid submitted yet — the system has estimated the winning price and margin for each'),
+        route: 'c_bids', tone: 'd', badge: t(lang, 'Gấp', 'Urgent'),
+      },
+      {
+        icon: '📉',
+        title: t(lang, `${lowFill.length} tuyến-tuần lấp đầy dưới 70%`, `Lane-weeks below 70% fill: ${lowFill.length}`),
+        detail: t(lang,
+          'Sắp tới hạn cắt máng. Trợ lý định giá đề xuất mức giá tối ưu doanh thu cho từng ô',
+          'Cut-off approaching. The pricing assistant proposes a revenue-optimal rate per cell'),
+        route: 'c_inv', tone: 'gd', badge: t(lang, 'Định giá', 'Reprice'),
+      },
+      {
+        icon: '✨',
+        title: t(lang, `${drafts} chuyến sắp cập cảng chưa có giỏ dịch vụ`,
+          `Arriving voyages without a service basket: ${drafts}`),
+        detail: t(lang,
+          'AI đã phân tích manifest và đề xuất 3 phương án — bạn chỉ cần chọn và duyệt',
+          'AI has analysed the manifest and proposed 3 options — select and approve'),
+        route: 'c_offer', tone: 'b', badge: t(lang, 'Trợ lý AI', 'AI assistant'),
+      },
+      {
+        icon: '🧾',
+        title: t(lang, `${excCount} khoản đối soát có sai lệch`, `Reconciliation exceptions: ${excCount}`),
+        detail: t(lang,
+          'Lệch giữa booking, chứng từ và hoá đơn — cần xử lý để không chặn thanh toán',
+          'Mismatch across booking, documents and invoice — resolve to unblock payment'),
+        route: 'c_settle', tone: 'gd', badge: t(lang, 'Đối soát', 'Reconcile'),
+      },
+      {
+        icon: '⚡',
+        title: t(lang, `${earlyCount} khoản phải thu đủ điều kiện nhận tiền sớm`,
+          `Receivables eligible for early payout: ${earlyCount}`),
+        detail: t(lang,
+          'Phí chiết khấu 0,42% — tiền về trong 4 giờ nếu ngân hàng phê duyệt',
+          '0.42% discount fee — funded within 4 hours subject to bank approval'),
+        route: 'c_settle', tone: 'b', badge: t(lang, 'Tuỳ chọn', 'Optional'),
+      },
+      {
+        icon: '📊',
+        title: t(lang, 'Giá của bạn đang cao hơn chỉ số ở 2 tuyến',
+          'Your rates are above index on 2 lanes'),
+        detail: t(lang,
+          'Chênh trên 4% so với VLX Index — nguy cơ mất khối lượng vào tay đối thủ',
+          'Over 4% above the VLX Index — volume may shift to competitors'),
+        route: 'c_inv', tone: 'b', badge: t(lang, 'Theo dõi', 'Watch'),
+      },
     ],
     shortcuts: [
-      { icon: '📈', label: t(lang, 'Bảng điều khiển', 'Dashboard'), route: 'c_dash' },
-      { icon: '🗂️', label: t(lang, 'Năng lực & niêm yết giá', 'Capacity & rates'), route: 'c_inv' },
+      { icon: '🗂️', label: t(lang, 'Niêm yết giá', 'Publish rates'), route: 'c_inv' },
       { icon: '✨', label: t(lang, 'Trợ lý chào giá', 'Offering assistant'), route: 'c_offer' },
       { icon: '📥', label: t(lang, 'Hộp thầu', 'Bid inbox'), route: 'c_bids' },
-      { icon: '🚢', label: t(lang, 'Phương tiện 360', 'Transport Asset 360'), route: 'c_fleet' },
-      { icon: '📦', label: t(lang, 'Sản phẩm 360', 'Product 360'), route: 'c_product' },
+      { icon: '📈', label: t(lang, 'Bảng điều khiển', 'Dashboard'), route: 'c_dash' },
+      { icon: '🧾', label: t(lang, 'Đối soát', 'Reconciliation'), route: 'c_settle' },
+      { icon: '⚡', label: t(lang, 'Nhận tiền sớm', 'Get paid early'), route: 'c_settle' },
     ],
+    panel: {
+      title: t(lang, 'Tuyến cần chú ý', 'Lanes needing attention'),
+      rows: lowFill.slice(0, 6).map((r) => ({
+        title: `${r.lane} · ${r.week}`,
+        sub: t(lang,
+          `còn ${r.remaining} TEU · cắt máng sau ${r.daysOut}d`,
+          `${r.remaining} TEU left · cut-off in ${r.daysOut}d`),
+        value: `${r.fill}%`,
+        meter: { value: r.fill, color: r.fill < 60 ? 'var(--down)' : 'var(--gold-500)' },
+      })),
+      footerLabel: t(lang, 'Mở bảng cước', 'Open the rate card'),
+      footerRoute: 'c_inv',
+    },
   }
 }

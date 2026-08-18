@@ -1,83 +1,171 @@
-import { and, avg, eq, inArray, lt, sql, sum } from 'drizzle-orm'
+import { and, asc, avg, eq, gt, inArray, lt, sql, sum } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import {
-  agentRuns, amlAlerts, cdpAccounts, cdpMergeQueue, corridors, creditExposures, disputes,
-  financeApplications, members, sandboxPrograms,
+  agentRuns, amlAlerts, assetFinanceDeals, cdpAccounts, cdpMergeQueue, corridors,
+  creditExposures, disputes, financeApplications, financeProducts, lettersOfCredit, members,
+  sandboxPrograms, settlements,
 } from '@/db/schema'
 import type { Lang } from '@/lib/i18n'
 import { num, t } from '@/lib/i18n'
+import { walk } from '@/components/charts'
 import type { HomeView } from './home-types'
 
 const n = sql<number>`count(*)::int`
 
-/** Financial institution — mirrors pageFHome (ui-2.html:1295). */
+/** f_home — HDBank home (ui-2.html:1295). */
 export async function financeHome(lang: Lang): Promise<HomeView> {
-  const [pending, approved, avgTat, exposure, stage3, ecl] = await Promise.all([
-    db.select({ n }).from(financeApplications).where(eq(financeApplications.decisionCode, 'refer')),
-    db.select({ n }).from(financeApplications).where(eq(financeApplications.decisionCode, 'approve')),
-    db.select({ v: avg(financeApplications.turnaroundHours) }).from(financeApplications),
-    db.select({ v: sum(creditExposures.exposure) }).from(creditExposures),
-    db.select({ n }).from(creditExposures).where(eq(creditExposures.ifrs9StageCode, 's3')),
-    db.select({ v: sum(creditExposures.ecl) }).from(creditExposures),
-  ])
+  const [referred, lcDiscrepant, breach, watch, diligence, earlyPayout, priority] =
+    await Promise.all([
+      db.select({ n }).from(financeApplications).where(eq(financeApplications.decisionCode, 'refer')),
+      // Step 4 is document presentation; a discrepancy there starts the 5-day clock.
+      db.select({ n }).from(lettersOfCredit)
+        .where(and(eq(lettersOfCredit.stepOrdinal, 4), gt(lettersOfCredit.discrepancies, 0))),
+      db.select({ n }).from(creditExposures)
+        .innerJoin(members, eq(members.id, creditExposures.memberId))
+        .where(eq(members.complianceStatusCode, 'breach')),
+      db.select({ n }).from(creditExposures)
+        .innerJoin(members, eq(members.id, creditExposures.memberId))
+        .where(eq(members.complianceStatusCode, 'watch')),
+      db.select({ n }).from(assetFinanceDeals).where(eq(assetFinanceDeals.statusCode, 'diligence')),
+      db.select({ n }).from(settlements).where(eq(settlements.statusCode, 'pending')),
+      db.select({
+        member: members.name,
+        productVi: financeProducts.nameVi,
+        productEn: financeProducts.nameEn,
+        amount: financeApplications.amount,
+        score: financeApplications.score,
+      })
+        .from(financeApplications)
+        .innerJoin(members, eq(members.id, financeApplications.memberId))
+        .innerJoin(financeProducts, eq(financeProducts.code, financeApplications.productCode))
+        .where(eq(financeApplications.decisionCode, 'refer'))
+        .orderBy(asc(financeApplications.id))
+        .limit(9),
+    ])
+
+  const referCount = referred[0]?.n ?? 0
+  const breachCount = breach[0]?.n ?? 0
+  const watchCount = watch[0]?.n ?? 0
+  const lcCount = lcDiscrepant[0]?.n ?? 0
+  const diligenceCount = diligence[0]?.n ?? 0
+  const earlyCount = earlyPayout[0]?.n ?? 0
 
   return {
-    heroTitle: t(lang, 'Chào buổi chiều, HDBank 👋', 'Good afternoon, HDBank 👋'),
+    heroTitle: t(lang, 'Chào buổi chiều, Châu 👋', 'Good afternoon, Châu 👋'),
     heroSub: t(lang,
-      `${pending[0]?.n ?? 0} hồ sơ cần thẩm định và ${stage3[0]?.n ?? 0} khoản ở Nhóm 3–5 cần theo dõi.`,
-      `${pending[0]?.n ?? 0} applications to review and ${stage3[0]?.n ?? 0} exposures in Stage 3–5 to watch.`),
+      `HDBank · Sovico Group — ${referCount} hồ sơ cần thẩm định thủ công và ${breachCount} đối tác vượt ngưỡng tuân thủ.`,
+      `HDBank · Sovico Group — ${referCount} files need manual underwriting and ${breachCount} counterparties are in breach.`),
     heroTags: [
-      t(lang, 'Định chế Tài chính', 'Financial Institution'),
-      t(lang, 'HDBank · Sovico Group', 'HDBank · Sovico Group'),
+      t(lang, 'Định chế tài chính', 'Financial institution'),
+      t(lang, 'Dư nợ 286 tỷ', '286bn outstanding'),
+      t(lang, 'NPL 0,34%', 'NPL 0.34%'),
     ],
     kpis: [
-      { label: t(lang, 'Chờ thẩm định', 'Awaiting review'), value: num(pending[0]?.n ?? 0),
-        meta: t(lang, 'máy đề xuất, người quyết', 'engine advises, officer decides'), metaTone: 'gd' },
-      { label: t(lang, 'Đã duyệt', 'Approved'), value: num(approved[0]?.n ?? 0),
-        meta: t(lang, 'trong kỳ', 'this period'), metaTone: 'u' },
-      { label: t(lang, 'Thời gian xử lý bình quân', 'Average turnaround'),
-        value: num(avgTat[0]?.v ?? 0, 1), unit: 'h', meta: t(lang, 'ngưỡng KPI ≤24 giờ', 'KPI ≤24h'), metaTone: 'u' },
-      { label: t(lang, 'Tổng dư nợ', 'Total exposure'), value: num(exposure[0]?.v ?? 0),
-        unit: t(lang, 'tr đ', 'm VND') },
-      { label: t(lang, 'Tổn thất dự kiến', 'Expected credit loss'), value: num(ecl[0]?.v ?? 0, 1),
-        unit: t(lang, 'tr đ', 'm VND'), meta: t(lang, `${stage3[0]?.n ?? 0} khoản Nhóm 3–5`, `${stage3[0]?.n ?? 0} in Stage 3–5`), metaTone: 'd' },
+      {
+        label: t(lang, 'Hồ sơ chờ quyết định', 'Files awaiting decision'),
+        value: num(referCount),
+        meta: t(lang, 'AI đã chấm điểm, chờ người duyệt', 'scored by AI, awaiting a human'),
+        metaTone: 'gd',
+      },
+      {
+        label: t(lang, 'Dư nợ tài trợ', 'Outstanding'),
+        value: '286', unit: t(lang, 'tỷ đ', 'bn VND'),
+        meta: '+34% YoY', metaTone: 'u', spark: walk(200, 20, 0.05, 71),
+      },
+      {
+        label: t(lang, 'Đối tác vượt ngưỡng', 'Counterparties in breach'),
+        value: num(breachCount),
+        meta: t(lang, `${watchCount} đang theo dõi`, `${watchCount} on watch`),
+        metaTone: 'd',
+      },
+      {
+        label: t(lang, 'L/C có sai lệch chứng từ', 'L/C with discrepancies'),
+        value: num(lcCount),
+        meta: t(lang, 'hạn trả lời 5 ngày làm việc', '5 banking days to respond'),
+        metaTone: 'gd',
+      },
+      {
+        label: t(lang, 'Escrow đang giữ', 'Escrow held'),
+        value: '42.6', unit: t(lang, 'tỷ đ', 'bn VND'),
+        meta: t(lang, '412 booking', '412 bookings'),
+      },
     ],
     todos: [
-      { icon: '🧠',
-        title: t(lang, `${pending[0]?.n ?? 0} hồ sơ được chuyển thẩm định thủ công`,
-          `Applications referred for manual review: ${pending[0]?.n ?? 0}`),
-        detail: t(lang, 'Bộ máy chấm điểm đã đề xuất nhưng không tự quyết — chuyên viên phải phê duyệt',
-          'The scoring engine advised but cannot decide — an officer must approve'),
-        route: 'f_credit', tone: 'd', badge: t(lang, 'Cần quyết định', 'Decision due') },
-      { icon: '⚠️',
-        title: t(lang, `${stage3[0]?.n ?? 0} khoản vay ở Nhóm 3–5`, `Exposures in IFRS-9 Stage 3–5: ${stage3[0]?.n ?? 0}`),
-        detail: t(lang, 'Đã quá hạn hoặc vi phạm điều kiện — cần trích lập và lên phương án thu hồi',
-          'Past due or in breach — provision and plan recovery'),
-        route: 'f_risk', tone: 'd', badge: t(lang, 'Rủi ro', 'Risk') },
-      { icon: '⚓',
-        title: t(lang, 'Danh mục tài trợ tàu và thiết bị', 'Ship and equipment finance pipeline'),
-        detail: t(lang, 'Hồ sơ đang thẩm định trong data room — kiểm tra LTV và DSCR trước khi cam kết',
-          'Deals in diligence in the data room — check LTV and DSCR before committing'),
-        route: 'f_asset', tone: 'gd', badge: t(lang, 'Thẩm định', 'Diligence') },
-      { icon: '💠',
-        title: t(lang, 'Sản phẩm tài trợ và bảo hiểm', 'Financing and insurance products'),
-        detail: t(lang, 'Rà soát điều kiện và lãi suất theo hồ sơ rủi ro từng nhóm khách hàng',
-          'Review terms and pricing against each customer segment risk profile'),
-        route: 'f_prod', tone: 'b', badge: t(lang, 'Định kỳ', 'Routine') },
-      { icon: '🏦',
-        title: t(lang, 'Trung tâm Tài chính Logistics', 'Logistics Financial Center'),
-        detail: t(lang, 'Theo dõi dòng tiền, hạn mức và chi phí vốn toàn danh mục',
-          'Track cash flow, limits and cost of funds across the portfolio'),
-        route: 'f_dash', tone: 'b', badge: t(lang, 'Tổng quan', 'Overview') },
+      {
+        icon: '🧠',
+        title: t(lang, `${referCount} hồ sơ tín dụng chờ thẩm định thủ công`,
+          `Credit files awaiting manual underwriting: ${referCount}`),
+        detail: t(lang,
+          'Điểm nằm trong vùng xám 50–70 — mô hình không tự quyết, cần chuyên viên xem bằng chứng giao dịch',
+          'Scores in the 50–70 grey zone — the model does not decide, an officer reviews the trade evidence'),
+        route: 'f_credit', tone: 'gd', badge: t(lang, 'Cần người duyệt', 'Human required'),
+      },
+      {
+        icon: '⚠️',
+        title: t(lang, `${breachCount} đối tác vượt ngưỡng tuân thủ`,
+          `Counterparties in compliance breach: ${breachCount}`),
+        detail: t(lang,
+          'Vượt hạn mức hoặc có nợ quá hạn — cần quyết định giảm hạn mức hay yêu cầu bổ sung bảo đảm',
+          'Over limit or in arrears — decide whether to cut the limit or call for more security'),
+        route: 'f_risk', tone: 'd', badge: t(lang, 'Gấp', 'Urgent'),
+      },
+      {
+        icon: '🧾',
+        title: t(lang, `${lcCount} bộ chứng từ L/C có sai lệch`,
+          `L/C document sets with discrepancies: ${lcCount}`),
+        detail: t(lang,
+          'Hệ thống đã đánh dấu và giải thích từng điểm — quyết định chấp nhận hay từ chối thuộc về bạn',
+          'The system flagged and explained each point — accepting or refusing is your call'),
+        route: 'f_dash', tone: 'gd', badge: t(lang, '5 ngày', '5 days'),
+      },
+      {
+        icon: '⚓',
+        title: t(lang, `${diligenceCount} giao dịch tài trợ tài sản đang thẩm định`,
+          `Asset finance deals in diligence: ${diligenceCount}`),
+        detail: t(lang,
+          'Data room đã có dữ liệu vận hành đã xác minh từ TOS cảng và AIS',
+          'The data room already holds verified operating data from port TOS and AIS'),
+        route: 'f_asset', tone: 'gd', badge: t(lang, 'Đang mở', 'Open'),
+      },
+      {
+        icon: '⚡',
+        title: t(lang, `${earlyCount} yêu cầu nhận tiền sớm chờ duyệt`,
+          `Early payout requests pending: ${earlyCount}`),
+        detail: t(lang,
+          'Khoản phải thu đã được nền tảng xác thực — rủi ro thấp, quyết định vẫn thuộc ngân hàng',
+          'Receivables verified by the platform — low risk, the decision still rests with the bank'),
+        route: 'f_prod', tone: 'b', badge: t(lang, 'Tuỳ chọn', 'Optional'),
+      },
+      {
+        icon: '📉',
+        title: t(lang, '6 đối tác có tín hiệu cảnh báo sớm',
+          'Counterparties showing early-warning signals: 6'),
+        detail: t(lang,
+          'Khối lượng giảm, tăng huỷ booking, kéo dài kỳ hạn — dấu hiệu căng thẳng dòng tiền trước 45–60 ngày',
+          'Volume down, cancellations up, terms stretched — cash stress 45–60 days ahead'),
+        route: 'f_risk', tone: 'b', badge: t(lang, 'Theo dõi', 'Watch'),
+      },
     ],
     shortcuts: [
-      { icon: '🏦', label: t(lang, 'Trung tâm tài chính', 'Financial center'), route: 'f_dash' },
       { icon: '🧠', label: t(lang, 'Bộ máy cấp tín dụng', 'Credit engine'), route: 'f_credit' },
-      { icon: '💠', label: t(lang, 'Tài trợ & bảo hiểm', 'Financing & insurance'), route: 'f_prod' },
+      { icon: '💠', label: t(lang, 'Sản phẩm tài trợ', 'Financing products'), route: 'f_prod' },
       { icon: '⚓', label: t(lang, 'Tài trợ tàu', 'Asset finance'), route: 'f_asset' },
       { icon: '⚠️', label: t(lang, 'Rủi ro & danh mục', 'Risk & portfolio'), route: 'f_risk' },
-      { icon: '🛡️', label: t(lang, 'AML / cấm vận', 'AML / sanctions'), route: 'x_aml' },
+      { icon: '🏦', label: t(lang, 'Tổng quan', 'Overview'), route: 'f_dash' },
+      { icon: '🤖', label: t(lang, 'Quản trị AI', 'AI governance'), route: 'a_agents' },
     ],
+    panel: {
+      title: t(lang, 'Hồ sơ ưu tiên hôm nay', 'Priority files today'),
+      rows: priority.map((p) => ({
+        title: p.member,
+        sub: lang === 'vi' ? p.productVi : p.productEn,
+        value: `${num(p.amount)} ${t(lang, 'tr', 'm')}`,
+        delta: String(p.score),
+        deltaTone: p.score >= 70 ? 'u' : p.score >= 50 ? 'gd' : 'd',
+      })),
+      footerLabel: t(lang, 'Mở hàng đợi tín dụng', 'Open the credit queue'),
+      footerRoute: 'f_credit',
+    },
   }
 }
 

@@ -2,7 +2,9 @@ import Link from 'next/link'
 import { asc, eq, sql } from 'drizzle-orm'
 import { Donut, LineChart, walk } from '@/components/charts'
 import { DataTable } from '@/components/table/data-table'
-import { Card, KpiTile, Legend, Meter, PageHeader, Tag } from '@/components/ui'
+import {
+  Card, DefinitionList, KpiTile, Legend, Meter, PageHeader, Tag,
+} from '@/components/ui'
 import { db } from '@/lib/db'
 import {
   assetTypes, corridors, fleetAssets, fleetStatuses, lifecycleStages, ownershipTypes, productGroups,
@@ -11,6 +13,9 @@ import {
 import { monthLabels, num, t, usd, type Lang } from '@/lib/i18n'
 import { laneOptions, productGroupOptions, statusLabelMap, statusOptions } from '@/lib/queries/lookups'
 import type { Tone } from '@/lib/queries/home-types'
+
+const tone = (labels: Map<string, { label: string; tone: string }>, code: string): Tone =>
+  (labels.get(code)?.tone ?? 'n') as Tone
 import { modalHref, openModalId } from '@/components/modal'
 import { FleetModal } from './record-modals'
 import type { RoutePageProps } from './page-props'
@@ -465,7 +470,17 @@ export async function FleetPage({ lang, basePath, searchParams }: RoutePageProps
   )
 }
 
-/** c_settle — Reconciliation & Payout (ui-2.html:2702). */
+/** ui-2.html:2748 — platform fee schedule §9.1. Never charged to both sides. */
+const FEE_SCHEDULE: Array<[string, string, string, string]> = [
+  ['Phí giao dịch booking', 'Booking service fee', '0,15–0,35%', '0.15–0.35%'],
+  ['Chỉ thu một bên theo thoả thuận', 'Charged to one side only', '✓', '✓'],
+  ['Phí chứng từ / eB/L', 'Document / eB/L fee', '50–150 nghìn đ', '50–150k VND'],
+  ['Thuê bao Enterprise / API', 'Enterprise / API subscription', '15–30 tr/tháng', '15–30m/mo'],
+  ['Phí origination tài trợ', 'Financing origination', '0,25–0,75%', '0.25–0.75%'],
+  ['Giai đoạn kích hoạt', 'Activation period', 'Miễn phí', 'Waived'],
+]
+
+/** c_settle — Reconciliation & Payout (ui-2.html:2707). */
 export async function CarrierSettlementPage({ lang, basePath, searchParams }: RoutePageProps) {
   const [rows, labels] = await Promise.all([
     db.select({
@@ -489,10 +504,11 @@ export async function CarrierSettlementPage({ lang, basePath, searchParams }: Ro
     statusLabelMap(lang),
   ])
 
-  const unmatched = rows.filter((r) => !r.matched)
-  const paid = rows.filter((r) => r.status === 'paid')
-  const totalPayout = paid.reduce((a, r) => a + Number(r.amount), 0)
-  const matchRate = (rows.filter((r) => r.matched).length / rows.length) * 100
+  const sumOf = (code: string) => rows
+    .filter((r) => r.status === code)
+    .reduce((a, r) => a + Number(r.amount), 0)
+  const countOf = (code: string) => rows.filter((r) => r.status === code).length
+  const banks = [...new Set(rows.map((r) => r.bank))].sort()
 
   return (
     <>
@@ -502,60 +518,155 @@ export async function CarrierSettlementPage({ lang, basePath, searchParams }: Ro
         modules={['F08']}
         sandbox={['SB-07']}
         sub={t(lang,
-          'Khớp mốc giao hàng với lệnh chi của ngân hàng. Nền tảng không giữ tiền — chỉ tạo mã tham chiếu và đối soát.',
-          'Match delivery milestones to bank payment instructions. The platform holds no funds — it issues references and reconciles.')}
+          'Đối soát ba chiều giữa booking, chứng từ và hoá đơn. Tiền về theo mốc qua ngân hàng, có tuỳ chọn nhận tiền sớm dựa trên khoản phải thu đã xác thực.',
+          'Three-way match across booking, documents and invoice. Milestone payouts through the bank, with an early-payment option on verified receivables.')}
+        actions={
+          <>
+            <span className="btn">⬇ {t(lang, 'Xuất báo cáo', 'Export')}</span>
+            <span className="btn g">⚡ {t(lang, 'Nhận tiền sớm', 'Get paid early')}</span>
+          </>
+        }
       />
 
-      <div className="grid g4" style={{ marginBottom: 14 }}>
-        <KpiTile label={t(lang, 'Đã chi trả', 'Paid out')} value={usd(totalPayout)}
-          meta={t(lang, `${num(paid.length)} khoản`, `${num(paid.length)} items`)} metaTone="u" />
-        <KpiTile label={t(lang, 'Tỷ lệ khớp tự động', 'Auto-match rate')} value={num(matchRate, 1)} unit="%"
-          bar={matchRate} />
-        <KpiTile label={t(lang, 'Chưa khớp', 'Unmatched')} value={num(unmatched.length)}
-          meta={t(lang, 'cần đối soát thủ công', 'manual reconciliation')} metaTone="gd" />
-        <KpiTile label={t(lang, 'Thanh toán sớm', 'Early payment')}
-          value={num(rows.filter((r) => r.early).length)}
-          meta={t(lang, 'đã nhận chiết khấu', 'discount taken')} metaTone="b" />
+      <div className="grid g5" style={{ marginBottom: 14 }}>
+        <KpiTile label={t(lang, 'Chờ thanh toán', 'Pending payout')}
+          value={`${usd(Math.round(sumOf('pending') / 1000))}K`}
+          meta={t(lang, `${num(countOf('pending'))} khoản chờ mốc`, `${num(countOf('pending'))} awaiting trigger`)} />
+        <KpiTile label={t(lang, 'Đã thanh toán tháng này', 'Paid this month')}
+          value={`${usd(Math.round(sumOf('paid') / 1000))}K`}
+          meta={t(lang, `${num(countOf('paid'))} khoản`, `${num(countOf('paid'))} items`)} metaTone="u" />
+        <KpiTile label={t(lang, 'Kỳ thu tiền (DSO)', 'Days sales outstanding')} value="11.4"
+          unit={t(lang, 'ngày', 'days')}
+          meta={t(lang, 'trước đây 46 ngày', 'was 46 days')} metaTone="u"
+          spark={walk(40, 20, -0.02, 17)} sparkColor="var(--up)" />
+        <KpiTile label={t(lang, 'Sai lệch đối soát', 'Match exceptions')} value={num(countOf('exception'))}
+          meta={t(lang, 'cần xử lý', 'to resolve')} metaTone="gd" />
+        <KpiTile label={t(lang, 'Tranh chấp đang mở', 'Open disputes')} value={num(countOf('dispute'))}
+          meta={t(lang, 'escrow đang giữ tiền', 'escrow holding funds')} metaTone="d" />
       </div>
 
-      <DataTable
-        id="cset" lang={lang} basePath={basePath} searchParams={searchParams}
-        title={t(lang, 'Đối soát theo mốc', 'Milestone reconciliation')} rows={rows}
-        searchPlaceholder={t(lang, 'Tìm mã, lô hàng, mã chi…', 'Search reference, shipment, payment ref…')}
-        search={(r) => `${r.id} ${r.shipment} ${r.counterparty} ${r.ref}`}
-        filters={[
-          {
-            key: 'st', label: t(lang, 'Trạng thái', 'Status'),
-            options: statusOptions(labels, ['paid', 'pending', 'exception', 'dispute']),
-            match: (r, v) => r.status === v,
-          },
-          {
-            key: 'match', label: t(lang, 'Khớp', 'Matched'),
-            options: [['1', t(lang, 'Đã khớp', 'Matched')], ['0', t(lang, 'Chưa khớp', 'Unmatched')]],
-            match: (r, v) => (v === '1' ? r.matched : !r.matched),
-          },
-        ]}
-        columns={[
-          { key: 'id', header: t(lang, 'Mã quyết toán', 'Settlement'), width: '14%', sortValue: (r) => r.id, render: (r) => <b className="num" style={{ fontSize: 12 }}>{r.id}</b> },
-          { key: 'ship', header: t(lang, 'Lô hàng', 'Shipment'), width: '15%', sortValue: (r) => r.shipment, render: (r) => <span className="num" style={{ fontSize: 11.5 }}>{r.shipment}</span> },
-          { key: 'cp', header: t(lang, 'Chủ hàng', 'Shipper'), width: '18%', sortValue: (r) => r.counterparty, render: (r) => <span style={{ fontSize: 12 }}>{r.counterparty}</span> },
-          {
-            key: 'trig', header: t(lang, 'Mốc', 'Trigger'), width: '15%',
-            sortValue: (r) => (lang === 'vi' ? r.triggerVi : r.triggerEn),
-            render: (r) => <span style={{ fontSize: 12 }}>{lang === 'vi' ? r.triggerVi : r.triggerEn}</span>,
-          },
-          { key: 'amt', header: t(lang, 'Số tiền', 'Amount'), cls: 'r', width: '11%', sortValue: (r) => Number(r.amount), render: (r) => <b className="num">{usd(r.amount)}</b> },
-          { key: 'ref', header: t(lang, 'Mã chi', 'Payment ref'), cls: 'c', width: '10%', sortValue: (r) => r.ref, render: (r) => <span className="num muted">{r.ref}</span> },
-          {
-            key: 'match', header: t(lang, 'Khớp', 'Match'), cls: 'c', width: '8%', sortValue: (r) => (r.matched ? 1 : 0),
-            render: (r) => r.matched ? <Tag tone="u">✓</Tag> : <Tag tone="gd">!</Tag>,
-          },
-          {
-            key: 'st', header: t(lang, 'Trạng thái', 'Status'), cls: 'c', width: '9%', sortValue: (r) => r.status,
-            render: (r) => <Tag tone={(labels.get(r.status)?.tone ?? 'n') as Tone}>{labels.get(r.status)?.label ?? r.status}</Tag>,
-          },
-        ]}
-      />
+      <div className="grid g-3-2">
+        <DataTable
+          id="stl" lang={lang} basePath={basePath} searchParams={searchParams}
+          title={t(lang, 'Sổ đối soát', 'Reconciliation ledger')} rows={rows} pageSize={14}
+          searchPlaceholder={t(lang, 'Tìm mã, lô hàng, khách hàng…', 'Search reference, shipment, counterparty…')}
+          search={(r) => `${r.id} ${r.shipment} ${r.counterparty} ${r.ref} ${r.bank}`}
+          filters={[
+            {
+              key: 'st', label: t(lang, 'Trạng thái', 'Status'),
+              options: statusOptions(labels, ['paid', 'pending', 'exception', 'dispute']),
+              match: (r, v) => r.status === v,
+            },
+            {
+              key: 'early', label: t(lang, 'Nhận sớm', 'Early payout'),
+              options: [['1', t(lang, 'Đã nhận sớm', 'Paid early')]],
+              match: (r) => r.early,
+            },
+            {
+              key: 'bank', label: t(lang, 'Ngân hàng', 'Bank'),
+              options: banks.map((b) => [b, b] as [string, string]),
+              match: (r, v) => r.bank === v,
+            },
+          ]}
+          columns={[
+            {
+              key: 'id', header: t(lang, 'Mã', 'Reference'), width: '13%',
+              sortValue: (r) => r.id,
+              render: (r) => (
+                <div>
+                  <b className="num" style={{ fontSize: 11.5 }}>{r.id}</b>
+                  <div className="muted">{r.ref}</div>
+                </div>
+              ),
+            },
+            {
+              key: 'ship', header: t(lang, 'Lô hàng', 'Shipment'), width: '15%',
+              sortValue: (r) => r.shipment,
+              render: (r) => <span className="num" style={{ fontSize: 11.5 }}>{r.shipment}</span>,
+            },
+            {
+              key: 'cp', header: t(lang, 'Khách hàng', 'Counterparty'), width: '18%',
+              sortValue: (r) => r.counterparty,
+              render: (r) => <span style={{ fontSize: 12 }}>{r.counterparty}</span>,
+            },
+            {
+              key: 'amt', header: t(lang, 'Số tiền', 'Amount'), cls: 'r', width: '11%',
+              sortValue: (r) => Number(r.amount),
+              render: (r) => <b className="num">{usd(r.amount)}</b>,
+            },
+            {
+              key: 'trig', header: t(lang, 'Mốc', 'Trigger'), width: '15%',
+              sortValue: (r) => (lang === 'vi' ? r.triggerVi : r.triggerEn),
+              render: (r) => <span style={{ fontSize: 11.5 }}>{lang === 'vi' ? r.triggerVi : r.triggerEn}</span>,
+            },
+            {
+              key: 'match', header: t(lang, '3 chiều', '3-way'), cls: 'c', width: '8%',
+              sortValue: (r) => (r.matched ? 1 : 0),
+              render: (r) => r.matched
+                ? <span style={{ color: 'var(--up)', fontWeight: 700 }}>✓✓✓</span>
+                : <span style={{ color: 'var(--down)', fontWeight: 700 }}>✓✓✕</span>,
+            },
+            {
+              key: 'early', header: t(lang, 'Sớm', 'Early'), cls: 'c', width: '7%',
+              sortValue: (r) => (r.early ? 1 : 0),
+              render: (r) => (r.early ? <Tag tone="gd">⚡</Tag> : <span className="muted">—</span>),
+            },
+            {
+              key: 'st', header: t(lang, 'Trạng thái', 'Status'), cls: 'c', width: '13%',
+              sortValue: (r) => r.status,
+              render: (r) => <Tag tone={tone(labels, r.status)}>{labels.get(r.status)?.label ?? r.status}</Tag>,
+            },
+          ]}
+        />
+
+        <div className="stack">
+          <div className="card" style={{ borderColor: 'var(--gold-500)' }}>
+            <div className="card-h">
+              <h3>⚡ {t(lang, 'Nhận tiền sớm', 'Early payout')}</h3>
+              <Tag tone="gd">HDBank</Tag>
+            </div>
+            <div className="card-b">
+              <div className="muted">{t(lang, 'Khoản phải thu đủ điều kiện', 'Eligible receivables')}</div>
+              <div className="num" style={{ fontSize: 26, fontWeight: 780, letterSpacing: '-.03em' }}>
+                11.4 {t(lang, 'tỷ đ', 'bn VND')}
+              </div>
+              <DefinitionList rows={[
+                [t(lang, 'Phí chiết khấu (0,42%)', 'Discount fee (0.42%)'),
+                  <span className="num">−47,9 {t(lang, 'tr', 'm')}</span>],
+                [t(lang, 'Nhận về hôm nay', 'Net today'),
+                  <span className="num" style={{ color: 'var(--up)', fontSize: 15 }}>11,35 {t(lang, 'tỷ', 'bn')}</span>],
+                [t(lang, 'Thay vì chờ', 'Instead of waiting'), `18 ${t(lang, 'ngày', 'days')}`],
+              ]} />
+              <div className="btn g blk" style={{ marginTop: 11 }}>
+                {t(lang, 'Yêu cầu nhận tiền sớm', 'Request early payout')}
+              </div>
+              <div className="note">
+                {t(lang,
+                  'Không cần tài sản bảo đảm bổ sung — HDBank thẩm định trên sổ giao dịch đã xác thực của nền tảng. Quyết định cấp vốn thuộc về ngân hàng.',
+                  'No additional collateral — HDBank underwrites against the platform’s verified trade ledger. The funding decision rests with the bank.')}
+              </div>
+            </div>
+          </div>
+
+          <Card
+            title={t(lang, 'Biểu phí nền tảng', 'Platform fee schedule')}
+            right={<span className="mod">§9.1</span>}>
+            <DefinitionList rows={FEE_SCHEDULE.map(([vi, en, valVi, valEn]) => [
+              t(lang, vi, en),
+              <span className="num">{t(lang, valVi, valEn)}</span>,
+            ])} />
+            <div className="between" style={{ background: 'var(--surface-3)', borderRadius: 9, padding: 10, marginTop: 9 }}>
+              <b style={{ fontSize: 12 }}>{t(lang, 'Chi phí thực trả tháng này', 'Effective cost this month')}</b>
+              <b className="num" style={{ fontSize: 15 }}>364 {t(lang, 'tr đ', 'm VND')}</b>
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              {t(lang,
+                'Tương đương 0,35% giá trị giao dịch — thấp hơn đáng kể so với chi phí bán hàng truyền thống. Không thu trên cả hai bên của cùng một giao dịch.',
+                'Equivalent to 0.35% of traded value — materially below traditional cost of sale. Never charged to both sides of the same transaction.')}
+            </div>
+          </Card>
+        </div>
+      </div>
     </>
   )
 }

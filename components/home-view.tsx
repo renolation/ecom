@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { Sparkline } from '@/components/charts'
+import { Meter } from '@/components/ui'
 import type { HomeView, Kpi, Shortcut, TodoItem, Tone } from '@/lib/queries/home-types'
 import type { Lang } from '@/lib/i18n'
 import { t } from '@/lib/i18n'
@@ -80,7 +81,7 @@ function ShortcutCard({ links, lang }: { links: Shortcut[]; lang: Lang }) {
       <div className="card-b" style={{ padding: 11 }}>
         <div className="grid g2" style={{ gap: 8 }}>
           {links.map((l) => (
-            <Link key={l.route} className="btn shortcut-btn" href={`/r/${l.route}?lang=${lang}`}>
+            <Link key={`${l.route}:${l.label}`} className="btn shortcut-btn" href={`/r/${l.route}?lang=${lang}`}>
               <span style={{ fontSize: 16, marginRight: 8 }}>{l.icon}</span>
               <span><b style={{ fontSize: 12, display: 'block' }}>{l.label}</b></span>
             </Link>
@@ -122,8 +123,10 @@ export function HomeViewLayout({ view, lang }: { view: HomeView; lang: Lang }) {
                       <b style={{ fontSize: 12 }}>{r.title}</b>
                       <div className="muted">{r.sub}</div>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <b className="num" style={{ fontSize: 13 }}>{r.value}</b>
+                    <div style={{ textAlign: 'right', minWidth: 80 }}>
+                      {r.meter
+                        ? <Meter value={r.meter.value} color={r.meter.color} width={52} />
+                        : <b className="num" style={{ fontSize: 13 }}>{r.value}</b>}
                       {r.delta ? <span className={`tag ${r.deltaTone ?? 'n'}`} style={{ marginLeft: 6 }}>{r.delta}</span> : null}
                     </div>
                   </div>
