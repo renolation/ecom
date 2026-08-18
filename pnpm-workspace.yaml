@@ -1,0 +1,5 @@
+# pnpm 11 reads settings from this file, not from package.json.
+# drizzle-kit needs esbuild's postinstall; next needs sharp's.
+allowBuilds:
+  esbuild: true
+  sharp: true
